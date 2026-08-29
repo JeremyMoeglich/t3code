@@ -9,6 +9,7 @@ packages:
 # true = allowed to run build scripts; false mirrors the pnpm 10 behavior
 # where anything outside onlyBuiltDependencies was silently not built.
 allowBuilds:
+  "@google/genai": false
   browser-tabs-lock: false
   bufferutil: false
   core-js: false
@@ -18,6 +19,7 @@ allowBuilds:
   msgpackr-extract: true
   msw: false
   node-pty: true
+  protobufjs: false
   sharp: true
   utf-8-validate: false
   workerd: false
@@ -85,6 +87,9 @@ minimumReleaseAgeExclude:
   - expo-updates@57.0.19
   - expo@57.0.18
   - expo-widgets@57.0.15
+  - "@earendil-works/pi-agent-core@0.84.4"
+  - "@earendil-works/pi-ai@0.84.4"
+  - "@earendil-works/pi-telemetry@0.84.4"
 
 overrides:
   # The SDK always receives the user's Claude executable, so its bundled binaries are unused.

@@ -688,14 +688,15 @@ export const ACPRegistryIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
-export const PiAgentIcon: Icon = ({ className, ...props }) => (
-  <svg {...props} viewBox="0 0 800 800" className={cn("fill-none", className)}>
-    <rect width="800" height="800" rx="160" fill="#000" />
+export const T3AgentIcon: Icon = ({ className, ...props }) => (
+  <svg {...props} viewBox="0 0 32 32" className={cn("fill-none", className)}>
+    <rect x="2" y="2" width="28" height="28" rx="8" fill="#6D5EF4" />
     <path
-      fill="#fff"
-      fillRule="evenodd"
-      d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
+      d="M8 9h3.5c2.5 0 3.6 1.8 4.6 3.5S18.1 16 20.5 16H27M8 16h19M8 23h3.5c2.5 0 3.6-1.8 4.6-3.5S18.1 16 20.5 16M23 12l4 4-4 4"
+      stroke="#fff"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
     />
-    <path fill="#fff" d="M517.36 400H634.72V634.72H517.36Z" />
   </svg>
 );
