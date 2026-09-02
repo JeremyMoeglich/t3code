@@ -259,6 +259,72 @@ it.effect("rebuilds the tool environment when a thread changes execution target"
   }),
 );
 
+it.effect("offers expose_port only when the execution environment supports it", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.promise(() =>
+      NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-agent-port-tool-")),
+    );
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true })),
+    );
+    const { faux, models } = testModels();
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("expose_port", { port: 3_000 }), {
+        stopReason: "toolUse",
+      }),
+      (context) => {
+        assert.isTrue(JSON.stringify(context.messages).includes("http://127.0.0.1:43123"));
+        return fauxAssistantMessage("shared the URL");
+      },
+    ]);
+    const env = Object.assign(new NodeExecutionEnv({ cwd: root }), {
+      exposePort: (containerPort: number) =>
+        Promise.resolve({
+          containerPort,
+          hostPort: 43_123,
+          url: "http://127.0.0.1:43123",
+        }),
+    });
+    const adapter = yield* makeT3AgentAdapter({
+      instanceId: ProviderInstanceId.make("t3Agent"),
+      providerId: "t3-agent-test",
+      sessionsRoot: NodePath.join(root, "sessions"),
+      credentials: NO_CREDENTIALS,
+      models,
+      resolveExecutionEnvironment: () => Effect.succeed(env),
+    });
+    const threadId = ThreadId.make("t3-agent-port-tool-thread");
+    const events: ProviderRuntimeEvent[] = [];
+    const completed = yield* Deferred.make<void>();
+    const eventFiber = yield* adapter.streamEvents.pipe(
+      Stream.runForEach((event) =>
+        Effect.sync(() => events.push(event)).pipe(
+          Effect.andThen(
+            event.type === "turn.completed" ? Deferred.succeed(completed, undefined) : Effect.void,
+          ),
+        ),
+      ),
+      Effect.forkChild,
+    );
+    yield* adapter.startSession({
+      ...startInput(threadId, root),
+      executionTarget: {
+        kind: "container",
+        containerId: AgentContainerId.make("container-port-tool"),
+      },
+    });
+    yield* adapter.sendTurn({ threadId, input: "start a server" });
+    yield* Deferred.await(completed).pipe(Effect.timeout("2 seconds"));
+    const configured = events.find((event) => event.type === "session.configured");
+    assert.deepEqual(
+      configured?.type === "session.configured" ? configured.payload.config.tools : undefined,
+      ["read", "bash", "edit", "write", "expose_port"],
+    );
+    yield* adapter.stopSession(threadId);
+    yield* Fiber.interrupt(eventFiber);
+  }),
+);
+
 it.effect("uses the agent core's built-in compaction before an over-window turn", () =>
   Effect.gen(function* () {
     const root = yield* Effect.promise(() =>
@@ -273,7 +339,11 @@ it.effect("uses the agent core's built-in compaction before an over-window turn"
     const seedRepo = new JsonlSessionRepo({ fs: seedEnv, sessionsRoot });
     const seed = yield* Effect.promise(() => seedRepo.create({ id: threadId, cwd: root }));
     yield* Effect.promise(() =>
-      seed.appendMessage({ role: "user", content: "retain the important context", timestamp: 1 }),
+      seed.appendMessage({
+        role: "user",
+        content: "retain the important context",
+        timestamp: 1,
+      }),
     );
     yield* Effect.promise(() =>
       seed.appendMessage({
@@ -288,7 +358,13 @@ it.effect("uses the agent core's built-in compaction before an over-window turn"
           cacheRead: 0,
           cacheWrite: 0,
           totalTokens: 0,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 0,
+          },
         },
         stopReason: "stop",
         timestamp: 2,

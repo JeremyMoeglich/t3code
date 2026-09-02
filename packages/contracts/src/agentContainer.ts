@@ -22,6 +22,7 @@ export const AgentContainerSummary = Schema.Struct({
   name: TrimmedNonEmptyString,
   workspacePath: TrimmedNonEmptyString,
   image: TrimmedNonEmptyString,
+  networkPolicy: Schema.String,
   status: AgentContainerStatus,
   createdAt: IsoDateTime,
 });
@@ -34,10 +35,24 @@ export const AgentContainerListResult = Schema.Struct({
 });
 export type AgentContainerListResult = typeof AgentContainerListResult.Type;
 
+export const AgentContainerConfigureInput = Schema.Struct({
+  id: AgentContainerId,
+  workspacePath: TrimmedNonEmptyString,
+  networkPolicy: Schema.String,
+});
+export type AgentContainerConfigureInput = typeof AgentContainerConfigureInput.Type;
+
+export const AgentContainerConfiguration = Schema.Struct({
+  id: AgentContainerId,
+  workspacePath: TrimmedNonEmptyString,
+  networkPolicy: Schema.String,
+});
+export type AgentContainerConfiguration = typeof AgentContainerConfiguration.Type;
+
 export class AgentContainerError extends Schema.TaggedErrorClass<AgentContainerError>()(
   "AgentContainerError",
   {
-    operation: Schema.Literals(["list", "create", "start", "exec"]),
+    operation: Schema.Literals(["list", "configure", "create", "start", "network", "exec"]),
     message: TrimmedNonEmptyString,
   },
 ) {}

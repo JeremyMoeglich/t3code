@@ -1657,6 +1657,10 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.agentContainersList, agentContainers.list(), {
             "rpc.aggregate": "agentContainers",
           }),
+        [WS_METHODS.agentContainersConfigure]: (input) =>
+          observeRpcEffect(WS_METHODS.agentContainersConfigure, agentContainers.configure(input), {
+            "rpc.aggregate": "agentContainers",
+          }),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,

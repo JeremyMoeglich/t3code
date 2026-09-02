@@ -2,7 +2,12 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
-import { AgentContainerError, AgentContainerListResult } from "./agentContainer.ts";
+import {
+  AgentContainerConfiguration,
+  AgentContainerConfigureInput,
+  AgentContainerError,
+  AgentContainerListResult,
+} from "./agentContainer.ts";
 
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import {
@@ -233,6 +238,7 @@ export const WS_METHODS = {
 
   // T3-managed agent execution containers
   agentContainersList: "agentContainers.list",
+  agentContainersConfigure: "agentContainers.configure",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -711,6 +717,12 @@ export const WsAgentContainersListRpc = Rpc.make(WS_METHODS.agentContainersList,
   error: Schema.Union([AgentContainerError, EnvironmentAuthorizationError]),
 });
 
+export const WsAgentContainersConfigureRpc = Rpc.make(WS_METHODS.agentContainersConfigure, {
+  payload: AgentContainerConfigureInput,
+  success: AgentContainerConfiguration,
+  error: Schema.Union([AgentContainerError, EnvironmentAuthorizationError]),
+});
+
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
   payload: VcsStatusInput,
   success: VcsStatusStreamEvent,
@@ -1093,6 +1105,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsDeleteRpc,
   WsProviderUploadFeedbackRpc,
   WsAgentContainersListRpc,
+  WsAgentContainersConfigureRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,

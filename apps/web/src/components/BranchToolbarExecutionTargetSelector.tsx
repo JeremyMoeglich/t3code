@@ -1,11 +1,18 @@
-import type { EnvironmentId, ThreadExecutionTarget } from "@t3tools/contracts";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import type {
+  AgentContainerSummary,
+  EnvironmentId,
+  ThreadExecutionTarget,
+} from "@t3tools/contracts";
 import { AgentContainerId } from "@t3tools/contracts";
-import { BoxIcon, MonitorIcon, PlusIcon } from "lucide-react";
-import { memo, useMemo } from "react";
+import { BoxIcon, MonitorIcon, PlusIcon, ShieldIcon } from "lucide-react";
+import { memo, useMemo, useState } from "react";
 
 import { agentContainerEnvironment } from "../state/agentContainers";
 import { useEnvironmentQuery } from "../state/query";
+import { useAtomCommand } from "../state/use-atom-command";
 import { randomUUID } from "../lib/utils";
+import { AgentContainerNetworkDialog } from "./AgentContainerNetworkDialog";
 import {
   Select,
   SelectGroup,
@@ -26,7 +33,12 @@ interface BranchToolbarExecutionTargetSelectorProps {
 
 const HOST_VALUE = "host";
 const NEW_VALUE = "new";
+const NETWORK_VALUE = "network";
 const containerValue = (id: AgentContainerId) => `container:${id}`;
+
+type NetworkDialog =
+  | { readonly kind: "create"; readonly id: AgentContainerId }
+  | { readonly kind: "edit"; readonly container: AgentContainerSummary };
 
 export const BranchToolbarExecutionTargetSelector = memo(
   function BranchToolbarExecutionTargetSelector({
@@ -36,6 +48,10 @@ export const BranchToolbarExecutionTargetSelector = memo(
     locked,
     onChange,
   }: BranchToolbarExecutionTargetSelectorProps) {
+    const [networkDialog, setNetworkDialog] = useState<NetworkDialog | null>(null);
+    const configure = useAtomCommand(agentContainerEnvironment.configure, {
+      reportFailure: false,
+    });
     const queryAtom = useMemo(
       () => agentContainerEnvironment.list({ environmentId, input: {} }),
       [environmentId],
@@ -66,6 +82,7 @@ export const BranchToolbarExecutionTargetSelector = memo(
     const items = [
       { value: HOST_VALUE, label: "Host" },
       { value: NEW_VALUE, label: "New container" },
+      ...(selectedContainer ? [{ value: NETWORK_VALUE, label: "Network policy" }] : []),
       ...compatible.map((container) => ({
         value: containerValue(container.id),
         label: container.name,
@@ -74,84 +91,136 @@ export const BranchToolbarExecutionTargetSelector = memo(
     ];
 
     return (
-      <Select
-        modal={false}
-        value={selectedValue}
-        items={items}
-        disabled={locked}
-        onValueChange={(next: string | null) => {
-          if (!next || next === HOST_VALUE) {
-            onChange({ kind: "host" });
-            return;
-          }
-          if (next === NEW_VALUE) {
-            onChange({ kind: "container", containerId: AgentContainerId.make(randomUUID()) });
-            return;
-          }
-          onChange({
-            kind: "container",
-            containerId: AgentContainerId.make(next.slice("container:".length)),
-          });
-        }}
-      >
-        <SelectTrigger
-          variant="ghost"
-          size="xs"
-          className="min-w-0 shrink font-medium"
-          aria-label="Execution environment"
-          data-composer-context-control
+      <>
+        <Select
+          modal={false}
+          value={selectedValue}
+          items={items}
+          onValueChange={(next: string | null) => {
+            if (next === NETWORK_VALUE) {
+              if (selectedContainer)
+                setNetworkDialog({
+                  kind: "edit",
+                  container: selectedContainer,
+                });
+              return;
+            }
+            if (locked) return;
+            if (!next || next === HOST_VALUE) {
+              onChange({ kind: "host" });
+              return;
+            }
+            if (next === NEW_VALUE) {
+              if (workspacePath) {
+                setNetworkDialog({
+                  kind: "create",
+                  id: AgentContainerId.make(randomUUID()),
+                });
+              }
+              return;
+            }
+            onChange({
+              kind: "container",
+              containerId: AgentContainerId.make(next.slice("container:".length)),
+            });
+          }}
         >
-          {value.kind === "host" ? (
-            <MonitorIcon className="size-3" />
-          ) : (
-            <BoxIcon className="size-3" />
-          )}
-          <span
-            data-composer-label
-            className="min-w-0 max-w-[200px] group-data-[compact]/composer-context:max-w-0"
+          <SelectTrigger
+            variant="ghost"
+            size="xs"
+            className="min-w-0 shrink font-medium"
+            aria-label="Execution environment"
+            data-composer-context-control
           >
-            <span className="block truncate group-data-[compact]/composer-context:opacity-0">
-              <SelectValue />
+            {value.kind === "host" ? (
+              <MonitorIcon className="size-3" />
+            ) : (
+              <BoxIcon className="size-3" />
+            )}
+            <span
+              data-composer-label
+              className="min-w-0 max-w-[200px] group-data-[compact]/composer-context:max-w-0"
+            >
+              <span className="block truncate group-data-[compact]/composer-context:opacity-0">
+                <SelectValue />
+              </span>
             </span>
-          </span>
-        </SelectTrigger>
-        <SelectPopup>
-          <SelectGroup>
-            <SelectGroupLabel>Agent runs in</SelectGroupLabel>
-            <SelectItem value={HOST_VALUE}>
-              <span className="inline-flex items-center gap-1.5">
-                <MonitorIcon className="size-3" /> Host
-              </span>
-            </SelectItem>
-            <SelectItem value={NEW_VALUE} disabled={!podmanAvailable}>
-              <span className="inline-flex items-center gap-1.5">
-                <PlusIcon className="size-3" /> New container
-              </span>
-            </SelectItem>
-            {compatible.map((container) => (
-              <SelectItem key={container.id} value={containerValue(container.id)}>
-                <span className="inline-flex min-w-0 items-center gap-1.5">
-                  <BoxIcon className="size-3" />
-                  <span className="truncate">{container.name}</span>
+          </SelectTrigger>
+          <SelectPopup>
+            <SelectGroup>
+              <SelectGroupLabel>Agent runs in</SelectGroupLabel>
+              <SelectItem value={HOST_VALUE} disabled={locked && value.kind !== "host"}>
+                <span className="inline-flex items-center gap-1.5">
+                  <MonitorIcon className="size-3" /> Host
                 </span>
               </SelectItem>
-            ))}
-            {pendingContainer ? (
-              <SelectItem value={pendingContainer.value}>
-                <span className="inline-flex min-w-0 items-center gap-1.5">
-                  <BoxIcon className="size-3" />
-                  <span className="truncate">{pendingContainer.label}</span>
+              <SelectItem value={NEW_VALUE} disabled={locked || !podmanAvailable || !workspacePath}>
+                <span className="inline-flex items-center gap-1.5">
+                  <PlusIcon className="size-3" /> New container
                 </span>
               </SelectItem>
+              {selectedContainer ? (
+                <SelectItem value={NETWORK_VALUE}>
+                  <span className="inline-flex items-center gap-1.5">
+                    <ShieldIcon className="size-3" /> Network policy…
+                  </span>
+                </SelectItem>
+              ) : null}
+              {compatible.map((container) => (
+                <SelectItem
+                  key={container.id}
+                  value={containerValue(container.id)}
+                  disabled={locked && container.id !== selectedContainer?.id}
+                >
+                  <span className="inline-flex min-w-0 items-center gap-1.5">
+                    <BoxIcon className="size-3" />
+                    <span className="truncate">{container.name}</span>
+                  </span>
+                </SelectItem>
+              ))}
+              {pendingContainer ? (
+                <SelectItem value={pendingContainer.value}>
+                  <span className="inline-flex min-w-0 items-center gap-1.5">
+                    <BoxIcon className="size-3" />
+                    <span className="truncate">{pendingContainer.label}</span>
+                  </span>
+                </SelectItem>
+              ) : null}
+            </SelectGroup>
+            {!podmanAvailable && query.data?.unavailableReason ? (
+              <p className="max-w-64 px-2 py-1.5 text-xs text-muted-foreground">
+                {query.data.unavailableReason}
+              </p>
             ) : null}
-          </SelectGroup>
-          {!podmanAvailable && query.data?.unavailableReason ? (
-            <p className="max-w-64 px-2 py-1.5 text-xs text-muted-foreground">
-              {query.data.unavailableReason}
-            </p>
-          ) : null}
-        </SelectPopup>
-      </Select>
+          </SelectPopup>
+        </Select>
+        <AgentContainerNetworkDialog
+          open={networkDialog !== null}
+          creating={networkDialog?.kind === "create"}
+          initialPolicy={
+            networkDialog?.kind === "edit" ? networkDialog.container.networkPolicy : ""
+          }
+          onOpenChange={(open) => !open && setNetworkDialog(null)}
+          onSave={async (networkPolicy) => {
+            if (!networkDialog || !workspacePath) return "A workspace is required.";
+            const id =
+              networkDialog.kind === "create" ? networkDialog.id : networkDialog.container.id;
+            const result = await configure({
+              environmentId,
+              input: { id, workspacePath, networkPolicy },
+            });
+            if (result._tag === "Failure") {
+              const cause = squashAtomCommandFailure(result);
+              return cause instanceof Error ? cause.message : String(cause);
+            }
+            query.refresh();
+            if (networkDialog.kind === "create") {
+              onChange({ kind: "container", containerId: id });
+            }
+            return null;
+          }}
+        />
+      </>
     );
   },
 );

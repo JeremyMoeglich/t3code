@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // @effect-diagnostics globalDateInEffect:off
 import {
+  type AgentContainerConfiguration,
+  type AgentContainerConfigureInput,
   AgentContainerError,
   AgentContainerId,
   type AgentContainerListResult,
@@ -17,11 +19,13 @@ import * as Schema from "effect/Schema";
 import { ServerConfig } from "../config.ts";
 import { PodmanExecutionEnv } from "./PodmanExecutionEnv.ts";
 import { localPodmanBackend, type PodmanBackend } from "./PodmanBackend.ts";
+import { expandDnsRules, parseNetworkPolicy, renderNftables } from "./NetworkPolicy.ts";
 
 const MANAGED_LABEL = "dev.t3code.agent-container";
 const ID_LABEL = "dev.t3code.agent-container.id";
 const WORKSPACE_LABEL = "dev.t3code.agent-container.workspace";
 const DEFAULT_IMAGE = "localhost/t3code-agent-base:latest";
+const CONFIG_VERSION = 1;
 
 const CONTAINERFILE = `FROM docker.io/library/debian:bookworm-slim
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
@@ -40,8 +44,18 @@ const InspectContainer = Schema.Struct({
     Image: Schema.String,
     Labels: Schema.Record(Schema.String, Schema.String),
   }),
-  State: Schema.Struct({ Status: Schema.String }),
+  HostConfig: Schema.Struct({ NetworkMode: Schema.String }),
+  ResolvConfPath: Schema.String,
+  State: Schema.Struct({ Status: Schema.String, Pid: Schema.Number }),
 });
+
+const StoredConfiguration = Schema.Struct({
+  version: Schema.Literal(CONFIG_VERSION),
+  id: AgentContainerId,
+  workspacePath: Schema.String,
+  networkPolicy: Schema.String,
+});
+const encodeStoredConfiguration = Schema.encodeSync(Schema.fromJsonString(StoredConfiguration));
 
 function error(operation: AgentContainerError["operation"], message: string) {
   return new AgentContainerError({
@@ -57,7 +71,10 @@ function status(value: string): AgentContainerSummary["status"] {
   return "error";
 }
 
-function toSummary(value: typeof InspectContainer.Type): AgentContainerSummary | undefined {
+function toSummary(
+  value: typeof InspectContainer.Type,
+  networkPolicy: string,
+): AgentContainerSummary | undefined {
   const id = value.Config.Labels[ID_LABEL];
   const workspacePath = value.Config.Labels[WORKSPACE_LABEL];
   if (!id || !workspacePath) return undefined;
@@ -66,6 +83,7 @@ function toSummary(value: typeof InspectContainer.Type): AgentContainerSummary |
     name: value.Name.replace(/^\//, ""),
     workspacePath,
     image: value.Config.Image,
+    networkPolicy,
     status: status(value.State.Status),
     createdAt: value.Created,
   };
@@ -75,6 +93,9 @@ export class AgentContainerManager extends Context.Service<
   AgentContainerManager,
   {
     readonly list: () => Effect.Effect<AgentContainerListResult, AgentContainerError>;
+    readonly configure: (
+      input: AgentContainerConfigureInput,
+    ) => Effect.Effect<AgentContainerConfiguration, AgentContainerError>;
     readonly executionEnvironment: (input: {
       readonly id: AgentContainerId;
       readonly workspacePath: string;
@@ -87,6 +108,81 @@ export function makeAgentContainerManager(
   podman: PodmanBackend = localPodmanBackend,
 ) {
   const image = process.env.T3CODE_AGENT_CONTAINER_IMAGE?.trim() || DEFAULT_IMAGE;
+  const configurationDirectory = NodePath.join(config.stateDir, "agent-containers");
+
+  const configurationPath = (id: AgentContainerId) =>
+    NodePath.join(configurationDirectory, `${Buffer.from(String(id)).toString("base64url")}.json`);
+
+  const networkAvailability = Effect.fn("AgentContainerManager.networkAvailability")(function* (
+    operation: AgentContainerError["operation"],
+  ) {
+    return yield* Effect.tryPromise({
+      try: () => podman.networkAvailability(),
+      catch: (cause) => error(operation, cause instanceof Error ? cause.message : String(cause)),
+    });
+  });
+
+  const readConfiguration = Effect.fn("AgentContainerManager.readConfiguration")(function* (
+    id: AgentContainerId,
+    workspacePath: string,
+  ) {
+    const contents = yield* Effect.tryPromise({
+      try: () =>
+        NodeFSP.readFile(configurationPath(id), "utf8").catch((cause: unknown) => {
+          if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") {
+            return undefined;
+          }
+          throw cause;
+        }),
+      catch: (cause) => error("configure", cause instanceof Error ? cause.message : String(cause)),
+    });
+    if (contents === undefined) {
+      return {
+        id,
+        workspacePath,
+        networkPolicy: "",
+      } satisfies AgentContainerConfiguration;
+    }
+    const stored = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(StoredConfiguration))(
+      contents,
+    ).pipe(
+      Effect.mapError((cause) =>
+        error("configure", `Invalid stored configuration for '${id}': ${String(cause)}`),
+      ),
+    );
+    if (stored.workspacePath !== workspacePath) {
+      return yield* error(
+        "configure",
+        `Container '${id}' belongs to '${stored.workspacePath}', not '${workspacePath}'.`,
+      );
+    }
+    return {
+      id: stored.id,
+      workspacePath: stored.workspacePath,
+      networkPolicy: stored.networkPolicy,
+    } satisfies AgentContainerConfiguration;
+  });
+
+  const writeConfiguration = Effect.fn("AgentContainerManager.writeConfiguration")(function* (
+    stored: typeof StoredConfiguration.Type,
+  ) {
+    yield* Effect.tryPromise({
+      try: async () => {
+        await NodeFSP.mkdir(configurationDirectory, {
+          recursive: true,
+          mode: 0o700,
+        });
+        const destination = configurationPath(stored.id);
+        const temporary = `${destination}.${process.pid}.tmp`;
+        await NodeFSP.writeFile(temporary, `${encodeStoredConfiguration(stored)}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        await NodeFSP.rename(temporary, destination);
+      },
+      catch: (cause) => error("configure", cause instanceof Error ? cause.message : String(cause)),
+    });
+  });
 
   const inspectManaged = Effect.fn("AgentContainerManager.inspectManaged")(function* () {
     const ids = yield* Effect.tryPromise({
@@ -126,11 +222,22 @@ export function makeAgentContainerManager(
         containers: [],
       };
     }
-    const containers = (yield* inspectManaged()).flatMap((entry) => {
-      const summary = toSummary(entry);
-      return summary ? [summary] : [];
-    });
-    return { available: true, containers };
+    const networking = yield* networkAvailability("list");
+    const containers = (yield* Effect.forEach(yield* inspectManaged(), (entry) => {
+      const id = entry.Config.Labels[ID_LABEL];
+      const workspacePath = entry.Config.Labels[WORKSPACE_LABEL];
+      if (!id || !workspacePath)
+        return Effect.succeed<AgentContainerSummary | undefined>(undefined);
+      return Effect.map(
+        readConfiguration(AgentContainerId.make(id), workspacePath),
+        (configuration) => toSummary(entry, configuration.networkPolicy),
+      );
+    })).flatMap((container) => (container ? [container] : []));
+    return {
+      available: networking.available,
+      ...(networking.reason ? { unavailableReason: networking.reason } : {}),
+      containers,
+    };
   });
 
   const ensureImage = Effect.fn("AgentContainerManager.ensureImage")(function* () {
@@ -166,6 +273,104 @@ export function makeAgentContainerManager(
     if (built.exitCode !== 0) return yield* error("create", built.stderr);
   });
 
+  const installNetworkPolicy = Effect.fn("AgentContainerManager.installNetworkPolicy")(function* (
+    container: typeof InspectContainer.Type,
+    networkPolicy: string,
+  ) {
+    if (container.State.Pid <= 0) {
+      return yield* error("network", `Container '${container.Name}' is not running.`);
+    }
+    const nameservers = yield* Effect.tryPromise({
+      try: async () => {
+        const resolv = await NodeFSP.readFile(container.ResolvConfPath, "utf8");
+        return resolv
+          .split(/\r?\n/)
+          .map((line) => /^\s*nameserver\s+(\S+)/.exec(line)?.[1])
+          .filter((value): value is string => Boolean(value));
+      },
+      catch: (cause) => error("network", cause instanceof Error ? cause.message : String(cause)),
+    });
+    const script = yield* Effect.try({
+      try: () =>
+        renderNftables(
+          expandDnsRules(
+            parseNetworkPolicy(networkPolicy, `${container.Name} network policy`),
+            nameservers,
+            `${container.Name} network policy`,
+          ),
+        ),
+      catch: (cause) => error("network", cause instanceof Error ? cause.message : String(cause)),
+    });
+    const installed = yield* Effect.tryPromise({
+      try: () =>
+        podman.run(
+          [
+            "unshare",
+            "nsenter",
+            "--target",
+            String(container.State.Pid),
+            "--net",
+            "nft",
+            "--file",
+            "-",
+          ],
+          { input: script },
+        ),
+      catch: (cause) => error("network", cause instanceof Error ? cause.message : String(cause)),
+    });
+    if (installed.exitCode !== 0) return yield* error("network", installed.stderr);
+  });
+
+  const configure = Effect.fn("AgentContainerManager.configure")(function* (
+    input: AgentContainerConfigureInput,
+  ) {
+    const workspacePath = yield* Effect.tryPromise({
+      try: () => NodeFSP.realpath(input.workspacePath),
+      catch: (cause) => error("configure", cause instanceof Error ? cause.message : String(cause)),
+    });
+    const policy = yield* Effect.try({
+      try: () => parseNetworkPolicy(input.networkPolicy),
+      catch: (cause) => error("configure", cause instanceof Error ? cause.message : String(cause)),
+    });
+    const existing = (yield* inspectManaged()).find(
+      (entry) => entry.Config.Labels[ID_LABEL] === input.id,
+    );
+    if (!existing) {
+      const networking = yield* networkAvailability("configure");
+      if (!networking.available) {
+        return yield* error("configure", networking.reason ?? "Podman networking is unavailable.");
+      }
+    }
+    if (existing) {
+      const existingWorkspace = existing.Config.Labels[WORKSPACE_LABEL];
+      if (existingWorkspace !== workspacePath) {
+        return yield* error(
+          "configure",
+          `Container '${input.id}' belongs to '${existingWorkspace}', not '${workspacePath}'.`,
+        );
+      }
+      if (policy.rules.length > 0 && existing.HostConfig.NetworkMode === "none") {
+        return yield* error(
+          "configure",
+          "This container predates configurable networking. Create a new container to enable outbound access.",
+        );
+      }
+      if (existing.State.Status === "running") yield* installNetworkPolicy(existing, policy.text);
+    }
+    const stored = {
+      version: CONFIG_VERSION,
+      id: input.id,
+      workspacePath,
+      networkPolicy: policy.text,
+    } satisfies typeof StoredConfiguration.Type;
+    yield* writeConfiguration(stored);
+    return {
+      id: stored.id,
+      workspacePath: stored.workspacePath,
+      networkPolicy: stored.networkPolicy,
+    } satisfies AgentContainerConfiguration;
+  });
+
   const executionEnvironment = Effect.fn("AgentContainerManager.executionEnvironment")(
     function* (input: { readonly id: AgentContainerId; readonly workspacePath: string }) {
       const workspacePath = yield* Effect.tryPromise({
@@ -175,7 +380,9 @@ export function makeAgentContainerManager(
       const existing = (yield* inspectManaged()).find(
         (entry) => entry.Config.Labels[ID_LABEL] === input.id,
       );
+      const configuration = yield* readConfiguration(input.id, workspacePath);
       let name: string;
+      let runningContainer: typeof InspectContainer.Type;
       if (existing) {
         const existingWorkspace = existing.Config.Labels[WORKSPACE_LABEL];
         if (existingWorkspace !== workspacePath) {
@@ -192,8 +399,19 @@ export function makeAgentContainerManager(
               error("start", cause instanceof Error ? cause.message : String(cause)),
           });
           if (started.exitCode !== 0) return yield* error("start", started.stderr);
+          const refreshed = (yield* inspectManaged()).find(
+            (entry) => entry.Config.Labels[ID_LABEL] === input.id,
+          );
+          if (!refreshed) return yield* error("start", `Container '${input.id}' disappeared.`);
+          runningContainer = refreshed;
+        } else {
+          runningContainer = existing;
         }
       } else {
+        const networking = yield* networkAvailability("create");
+        if (!networking.available) {
+          return yield* error("create", networking.reason ?? "Podman networking is unavailable.");
+        }
         yield* ensureImage();
         name = `t3-agent-${String(input.id)
           .replace(/[^a-zA-Z0-9_.-]/g, "-")
@@ -211,7 +429,7 @@ export function makeAgentContainerManager(
               "--label",
               `${WORKSPACE_LABEL}=${workspacePath}`,
               "--network",
-              "none",
+              "pasta:--no-map-gw",
               "--volume",
               `${workspacePath}:/workspace:rw`,
               "--workdir",
@@ -226,7 +444,13 @@ export function makeAgentContainerManager(
           catch: (cause) => error("start", cause instanceof Error ? cause.message : String(cause)),
         });
         if (started.exitCode !== 0) return yield* error("start", started.stderr);
+        const refreshed = (yield* inspectManaged()).find(
+          (entry) => entry.Config.Labels[ID_LABEL] === input.id,
+        );
+        if (!refreshed) return yield* error("start", `Container '${input.id}' disappeared.`);
+        runningContainer = refreshed;
       }
+      yield* installNetworkPolicy(runningContainer, configuration.networkPolicy);
       const probe = yield* Effect.tryPromise({
         try: () => podman.run(["exec", "--workdir", "/workspace", name, "python3", "--version"]),
         catch: (cause) => error("exec", cause instanceof Error ? cause.message : String(cause)),
@@ -236,7 +460,7 @@ export function makeAgentContainerManager(
     },
   );
 
-  return AgentContainerManager.of({ list, executionEnvironment });
+  return AgentContainerManager.of({ list, configure, executionEnvironment });
 }
 
 export const layer = Layer.effect(

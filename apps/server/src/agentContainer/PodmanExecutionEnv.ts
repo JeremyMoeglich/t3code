@@ -13,6 +13,11 @@ import {
 import * as NodePath from "node:path";
 
 import { localPodmanBackend, type PodmanBackend } from "./PodmanBackend.ts";
+import {
+  hostPortForwarder,
+  type ExposedContainerPort,
+  type HostPortForwarder,
+} from "./HostPortForwarder.ts";
 
 interface CommandResult {
   readonly stdout: Buffer;
@@ -73,16 +78,23 @@ export class PodmanExecutionEnv implements ExecutionEnv {
   private readonly containerName: string;
   private readonly podman: PodmanBackend;
   private readonly defaultEnv: Readonly<Record<string, string>>;
+  private readonly portForwarder: HostPortForwarder;
   private readonly activeCommands = new Set<ReturnType<PodmanBackend["spawn"]>>();
 
   constructor(
     containerName: string,
     podman: PodmanBackend = localPodmanBackend,
     defaultEnv: Readonly<Record<string, string>> = {},
+    portForwarder: HostPortForwarder = hostPortForwarder,
   ) {
     this.containerName = containerName;
     this.podman = podman;
     this.defaultEnv = defaultEnv;
+    this.portForwarder = portForwarder;
+  }
+
+  exposePort(containerPort: number): Promise<ExposedContainerPort> {
+    return this.portForwarder.expose(this.containerName, containerPort, this.podman);
   }
 
   private run(

@@ -58,6 +58,7 @@ import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import { Type } from "typebox";
 
 import {
   ProviderAdapterRequestError,
@@ -70,7 +71,8 @@ import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/P
 const PROVIDER = ProviderDriverKind.make("t3Agent");
 const SYSTEM_PROMPT = `You are a coding agent running inside T3 Code.
 Work directly in the current working directory. Inspect before changing files, keep edits focused,
-and verify the result. You have only read, bash, edit, and write tools in the selected execution environment.`;
+and verify the result. Read, bash, edit, and write operate in the selected execution environment.`;
+const CONTAINER_PROMPT = ` When a service must be reachable by the user, keep it on its internal port and call expose_port. Use the returned URL in your response.`;
 const TURN_START = "t3-turn-start";
 const TURN_END = "t3-turn-end";
 
@@ -163,6 +165,48 @@ function wrapHarnessTool(tool: AgentHarnessTool<{ env: ExecutionEnv }>, env: Exe
   return wrapped;
 }
 
+interface PortExposingEnvironment extends ExecutionEnv {
+  readonly exposePort: (containerPort: number) => Promise<{
+    readonly containerPort: number;
+    readonly hostPort: number;
+    readonly url: string;
+  }>;
+}
+
+function isPortExposingEnvironment(env: ExecutionEnv): env is PortExposingEnvironment {
+  return "exposePort" in env && typeof env.exposePort === "function";
+}
+
+const exposePortSchema = Type.Object({
+  port: Type.Integer({
+    minimum: 1,
+    maximum: 65_535,
+    description: "TCP port inside the container",
+  }),
+});
+
+function createExposePortTool(env: PortExposingEnvironment): AgentTool<typeof exposePortSchema> {
+  return {
+    name: "expose_port",
+    label: "expose port",
+    description:
+      "Expose a TCP port that a service is listening on inside the selected container. T3 chooses a loopback-only host port and returns the URL the user can open. The service keeps using its original internal port.",
+    parameters: exposePortSchema,
+    execute: async (_toolCallId, { port }) => {
+      const exposed = await env.exposePort(port);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Container port ${exposed.containerPort} is available to the user at ${exposed.url}. Continue using port ${exposed.containerPort} inside the container.`,
+          },
+        ],
+        details: exposed,
+      };
+    },
+  };
+}
+
 function thinkingLevel(input: ProviderSendTurnInput): Agent["state"]["thinkingLevel"] {
   const raw =
     getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort") ??
@@ -189,7 +233,9 @@ function toolItemType(toolName: string): "command_execution" | "file_change" | "
 }
 
 function approvalType(toolName: string): PendingApproval["requestType"] {
-  return toolName === "bash" ? "command_execution_approval" : "file_change_approval";
+  return toolName === "bash" || toolName === "expose_port"
+    ? "command_execution_approval"
+    : "file_change_approval";
 }
 
 function shouldApproveAutomatically(
@@ -641,9 +687,10 @@ export const makeT3AgentAdapter = Effect.fn("makeT3AgentAdapter")(function* (
       const tools = [createReadTool(), createBashTool(), createEditTool(), createWriteTool()].map(
         (tool) => wrapHarnessTool(tool, env),
       );
+      if (isPortExposingEnvironment(env)) tools.push(createExposePortTool(env));
       const agent = new Agent({
         initialState: {
-          systemPrompt: SYSTEM_PROMPT,
+          systemPrompt: `${SYSTEM_PROMPT}${isPortExposingEnvironment(env) ? CONTAINER_PROMPT : ""}`,
           model,
           thinkingLevel: "medium",
           tools,
