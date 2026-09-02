@@ -14,6 +14,7 @@ import {
   type CredentialStore,
 } from "@earendil-works/pi-ai";
 import {
+  AgentContainerId,
   ApprovalRequestId,
   ProviderInstanceId,
   ThreadId,
@@ -216,6 +217,45 @@ it.effect("executes a host bash tool only after T3 approval", () =>
     assert.isTrue(typeof output === "string" && output.includes("approved"));
     yield* adapter.stopSession(threadId);
     yield* Fiber.interrupt(eventFiber);
+  }),
+);
+
+it.effect("rebuilds the tool environment when a thread changes execution target", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.promise(() =>
+      NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-agent-target-")),
+    );
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true })),
+    );
+    const { models } = testModels();
+    const resolvedTargets: string[] = [];
+    const adapter = yield* makeT3AgentAdapter({
+      instanceId: ProviderInstanceId.make("t3Agent"),
+      providerId: "t3-agent-test",
+      sessionsRoot: NodePath.join(root, "sessions"),
+      credentials: NO_CREDENTIALS,
+      models,
+      resolveExecutionEnvironment: (input) =>
+        Effect.sync(() => {
+          resolvedTargets.push(input.executionTarget?.kind ?? "host");
+          return new NodeExecutionEnv({ cwd: root });
+        }),
+    });
+    const threadId = ThreadId.make("t3-agent-target-thread");
+    yield* adapter.startSession(startInput(threadId, root));
+    yield* adapter.startSession(startInput(threadId, root));
+    yield* adapter.startSession({
+      ...startInput(threadId, root),
+      executionTarget: {
+        kind: "container",
+        containerId: AgentContainerId.make("container-1"),
+      },
+    });
+
+    assert.deepEqual(resolvedTargets, ["host", "container"]);
+    assert.equal((yield* adapter.listSessions())[0]?.executionTarget?.kind, "container");
+    yield* adapter.stopSession(threadId);
   }),
 );
 

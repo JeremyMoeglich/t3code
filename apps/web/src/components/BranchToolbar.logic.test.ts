@@ -453,6 +453,17 @@ describe("shouldShowComposerContextStrip", () => {
       }),
     ).toBe(true);
   });
+
+  it("shows container controls for a non-Git project", () => {
+    expect(
+      shouldShowComposerContextStrip({
+        hasActiveProject: true,
+        isGitRepo: false,
+        showEnvironmentIndicator: false,
+        showExecutionTarget: true,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("resolveEffectiveEnvMode", () => {

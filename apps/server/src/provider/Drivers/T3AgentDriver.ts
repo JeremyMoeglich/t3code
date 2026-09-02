@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDateInEffect:off
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import {
   T3AgentSettings,
   ProviderDriverKind,
@@ -13,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../../config.ts";
+import { makeAgentContainerManager } from "../../agentContainer/AgentContainerManager.ts";
 import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import { makeT3AgentAdapter } from "../Layers/T3AgentAdapter.ts";
 import { makePiCredentialStore } from "../PiCredentialStore.ts";
@@ -91,6 +93,7 @@ export const T3AgentDriver: ProviderDriver<T3AgentSettings, T3AgentDriverEnv> = 
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig;
+      const agentContainers = makeAgentContainerManager(serverConfig);
       const effectiveConfig = { ...config, enabled } satisfies T3AgentSettings;
       const credentials = makePiCredentialStore(effectiveConfig.authPath);
       const processEnvironment = mergeProviderInstanceEnvironment(environment) as Record<
@@ -115,6 +118,18 @@ export const T3AgentDriver: ProviderDriver<T3AgentSettings, T3AgentDriverEnv> = 
         credentials,
         environment: processEnvironment,
         models,
+        resolveExecutionEnvironment: (input) =>
+          input.executionTarget?.kind === "container"
+            ? agentContainers.executionEnvironment({
+                id: input.executionTarget.containerId,
+                workspacePath: input.cwd,
+              })
+            : Effect.succeed(
+                new NodeExecutionEnv({
+                  cwd: input.cwd,
+                  shellEnv: { ...process.env, ...processEnvironment },
+                }),
+              ),
       });
       yield* Effect.addFinalizer(() => Effect.ignore(adapter.stopAll()));
 
@@ -141,6 +156,7 @@ export const T3AgentDriver: ProviderDriver<T3AgentSettings, T3AgentDriverEnv> = 
             continuation: { groupKey: continuationIdentity.continuationKey },
             showInteractionModeToggle: false,
             requiresNewThreadForModelChange: false,
+            supportsAgentContainers: true,
             enabled,
             installed: true,
             version: null,
@@ -174,6 +190,7 @@ export const T3AgentDriver: ProviderDriver<T3AgentSettings, T3AgentDriverEnv> = 
             continuation: { groupKey: continuationIdentity.continuationKey },
             showInteractionModeToggle: false,
             requiresNewThreadForModelChange: false,
+            supportsAgentContainers: true,
             enabled,
             installed: true,
             version: null,

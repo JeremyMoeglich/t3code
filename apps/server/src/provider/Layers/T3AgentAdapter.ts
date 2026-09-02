@@ -20,6 +20,7 @@ import {
   type AgentMessage,
   type AgentTool,
   type Entry,
+  type ExecutionEnv,
   type Session,
   uuidv7,
 } from "@earendil-works/pi-agent-core";
@@ -47,12 +48,14 @@ import {
   TurnId,
   type RuntimeMode,
   type ProviderInstanceId,
+  type ThreadExecutionTarget,
 } from "@t3tools/contracts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
@@ -67,14 +70,14 @@ import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/P
 const PROVIDER = ProviderDriverKind.make("t3Agent");
 const SYSTEM_PROMPT = `You are a coding agent running inside T3 Code.
 Work directly in the current working directory. Inspect before changing files, keep edits focused,
-and verify the result. You have only read, bash, edit, and write host tools.`;
+and verify the result. You have only read, bash, edit, and write tools in the selected execution environment.`;
 const TURN_START = "t3-turn-start";
 const TURN_END = "t3-turn-end";
 
 interface T3AgentSessionContext {
   readonly session: ProviderSession;
   readonly history: Session;
-  readonly env: NodeExecutionEnv;
+  readonly env: ExecutionEnv;
   readonly agent: Agent;
   readonly approvedTools: Set<string>;
   activeTurnId: TurnId | undefined;
@@ -96,6 +99,10 @@ export interface T3AgentAdapterOptions {
   readonly credentials: CredentialStore;
   readonly environment?: Readonly<Record<string, string>>;
   readonly models?: Models;
+  readonly resolveExecutionEnvironment?: (input: {
+    readonly cwd: string;
+    readonly executionTarget: ThreadExecutionTarget | undefined;
+  }) => Effect.Effect<ExecutionEnv, Error>;
 }
 
 function expandHome(path: string): string {
@@ -147,7 +154,7 @@ function jsonValue<T>(value: T): T {
   return value;
 }
 
-function wrapHarnessTool(tool: AgentHarnessTool<{ env: NodeExecutionEnv }>, env: NodeExecutionEnv) {
+function wrapHarnessTool(tool: AgentHarnessTool<{ env: ExecutionEnv }>, env: ExecutionEnv) {
   const wrapped: AgentTool = {
     ...tool,
     execute: (toolCallId, params, signal, onUpdate) =>
@@ -545,7 +552,27 @@ export const makeT3AgentAdapter = Effect.fn("makeT3AgentAdapter")(function* (
   const startSession = (input: ProviderSessionStartInput) =>
     Effect.gen(function* () {
       const existing = sessions.get(input.threadId);
-      if (existing) return makeSessionSnapshot(existing);
+      if (
+        existing &&
+        existing.session.cwd === input.cwd &&
+        Equal.equals(
+          existing.session.executionTarget ?? { kind: "host" },
+          input.executionTarget ?? { kind: "host" },
+        )
+      ) {
+        return makeSessionSnapshot(existing);
+      }
+      if (existing) {
+        if (existing.agent.state.isStreaming) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: "The execution target cannot change while a turn is running.",
+          });
+        }
+        yield* Effect.promise(() => existing.env.cleanup());
+        sessions.delete(input.threadId);
+      }
       const cwd = input.cwd;
       if (!cwd) {
         return yield* new ProviderAdapterValidationError({
@@ -570,10 +597,29 @@ export const makeT3AgentAdapter = Effect.fn("makeT3AgentAdapter")(function* (
             cause,
           }),
       });
-      const env = new NodeExecutionEnv({
-        cwd,
-        shellEnv: { ...process.env, ...options.environment },
-      });
+      const env = yield* (
+        options.resolveExecutionEnvironment
+          ? options.resolveExecutionEnvironment({ cwd, executionTarget: input.executionTarget })
+          : Effect.succeed(
+              new NodeExecutionEnv({
+                cwd,
+                shellEnv: { ...process.env, ...options.environment },
+              }),
+            )
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "startSession",
+              detail:
+                cause instanceof Error
+                  ? cause.message
+                  : "Could not prepare the execution environment.",
+              cause,
+            }),
+        ),
+      );
       const now = new Date().toISOString();
       const restoredMessages = yield* Effect.promise(() =>
         pathEntries(history).then((entries) => buildSessionContext(entries).messages),
@@ -584,6 +630,7 @@ export const makeT3AgentAdapter = Effect.fn("makeT3AgentAdapter")(function* (
         status: "ready",
         runtimeMode: input.runtimeMode,
         cwd,
+        ...(input.executionTarget ? { executionTarget: input.executionTarget } : {}),
         model: model.id,
         threadId: input.threadId,
         resumeCursor: { sessionId: input.threadId },

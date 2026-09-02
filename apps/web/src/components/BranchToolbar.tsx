@@ -1,5 +1,5 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadExecutionTarget, ThreadId } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
   CloudIcon,
@@ -28,6 +28,7 @@ import {
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
+import { BranchToolbarExecutionTargetSelector } from "./BranchToolbarExecutionTargetSelector";
 import { Button } from "./ui/button";
 import {
   Menu,
@@ -57,6 +58,10 @@ interface BranchToolbarProps {
   onComposerFocusRequest?: () => void;
   availableEnvironments?: readonly EnvironmentOption[];
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
+  showExecutionTarget: boolean;
+  executionTarget: ThreadExecutionTarget;
+  executionTargetLocked: boolean;
+  onExecutionTargetChange: (target: ThreadExecutionTarget) => void;
 }
 
 interface MobileRunContextSelectorProps {
@@ -389,6 +394,10 @@ export const BranchToolbar = memo(function BranchToolbar({
   onComposerFocusRequest,
   availableEnvironments,
   onEnvironmentChange,
+  showExecutionTarget,
+  executionTarget,
+  executionTargetLocked,
+  onExecutionTargetChange,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -517,6 +526,20 @@ export const BranchToolbar = memo(function BranchToolbar({
           ) : null}
         </div>
       )}
+
+      {showExecutionTarget ? (
+        <BranchToolbarExecutionTargetSelector
+          environmentId={environmentId}
+          workspacePath={
+            effectiveEnvMode === "worktree" && activeWorktreePath === null
+              ? null
+              : (activeWorktreePath ?? activeProject.workspaceRoot)
+          }
+          value={executionTarget}
+          locked={executionTargetLocked}
+          onChange={onExecutionTargetChange}
+        />
+      ) : null}
 
       {showGitControls ? (
         <BranchToolbarBranchSelector

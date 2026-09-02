@@ -15,6 +15,7 @@ import {
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
+  type ThreadExecutionTarget,
   type TurnId,
   type KeybindingCommand,
   OrchestrationThreadActivity,
@@ -2935,6 +2936,7 @@ function ChatViewContent(props: ChatViewProps) {
     hasActiveProject: activeProject !== null,
     isGitRepo,
     showEnvironmentIndicator: showComposerEnvironmentIndicator,
+    showExecutionTarget: activeProviderStatus?.supportsAgentContainers === true,
   });
   const initialDiffPanelGitScope =
     gitStatusQuery.data?.hasWorkingTreeChanges === true ? "unstaged" : "branch";
@@ -2981,6 +2983,42 @@ function ChatViewContent(props: ChatViewProps) {
     activeThread &&
     (activeThread.messages.length > 0 ||
       (activeThread.session !== null && activeThread.session.status !== "stopped")),
+  );
+  const executionTarget = activeThread?.executionTarget ?? { kind: "host" };
+  const showExecutionTarget = activeProviderStatus?.supportsAgentContainers === true;
+  const executionTargetLocked = Boolean(
+    isSendBusy ||
+    activeThread?.session?.status === "starting" ||
+    activeThread?.session?.status === "running",
+  );
+  const onExecutionTargetChange = useCallback(
+    (target: ThreadExecutionTarget) => {
+      if (!activeThread || executionTargetLocked) return;
+      if (isLocalDraftThread) {
+        setDraftThreadContext(composerDraftTarget, { executionTarget: target });
+        return;
+      }
+      void updateThreadMetadata({
+        environmentId: activeThread.environmentId,
+        input: { threadId: activeThread.id, executionTarget: target },
+      }).then((result) => {
+        if (result._tag === "Failure") {
+          toastManager.add({
+            type: "error",
+            title: "Could not change execution environment",
+            description: String(squashAtomCommandFailure(result)),
+          });
+        }
+      });
+    },
+    [
+      activeThread,
+      composerDraftTarget,
+      executionTargetLocked,
+      isLocalDraftThread,
+      setDraftThreadContext,
+      updateThreadMetadata,
+    ],
   );
 
   // Handle environment change for draft threads.  When the user picks a
@@ -6025,6 +6063,7 @@ function ChatViewContent(props: ChatViewProps) {
                       interactionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
+                      executionTarget,
                       createdAt: activeThread.createdAt,
                     },
                   }
@@ -6591,6 +6630,7 @@ function ChatViewContent(props: ChatViewProps) {
         interactionMode: "default",
         branch: activeThreadBranch,
         worktreePath: activeThread.worktreePath,
+        executionTarget,
         createdAt,
       },
     });
@@ -7337,6 +7377,10 @@ function ChatViewContent(props: ChatViewProps) {
                                     }
                                   : {})}
                                 envLocked={envLocked}
+                                showExecutionTarget={showExecutionTarget}
+                                executionTarget={executionTarget}
+                                executionTargetLocked={executionTargetLocked}
+                                onExecutionTargetChange={onExecutionTargetChange}
                                 onComposerFocusRequest={scheduleComposerFocus}
                                 {...(canCheckoutPullRequestIntoThread
                                   ? { onCheckoutPullRequestRequest: openPullRequestDialog }
