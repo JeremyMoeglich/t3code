@@ -17,6 +17,10 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import { ServerConfig } from "../config.ts";
+import {
+  type AgentContainerProfile,
+  resolveAgentContainerProfile,
+} from "./AgentContainerProfile.ts";
 import { PodmanExecutionEnv } from "./PodmanExecutionEnv.ts";
 import { localPodmanBackend, type PodmanBackend } from "./PodmanBackend.ts";
 import { expandDnsRules, parseNetworkPolicy, renderNftables } from "./NetworkPolicy.ts";
@@ -24,14 +28,18 @@ import { expandDnsRules, parseNetworkPolicy, renderNftables } from "./NetworkPol
 const MANAGED_LABEL = "dev.t3code.agent-container";
 const ID_LABEL = "dev.t3code.agent-container.id";
 const WORKSPACE_LABEL = "dev.t3code.agent-container.workspace";
-const DEFAULT_IMAGE = "localhost/t3code-agent-base:latest";
+const PROFILE_LABEL = "dev.t3code.agent-container.profile";
+const DEFAULT_IMAGE = "localhost/t3code-agent-base:3";
 const CONFIG_VERSION = 1;
 
-const CONTAINERFILE = `FROM docker.io/library/debian:bookworm-slim
+const CONTAINERFILE = `FROM docker.io/library/node:24-bookworm-slim AS node
+FROM docker.io/library/rust:1-slim-bookworm
+COPY --from=node /usr/local/ /usr/local/
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
   bash build-essential ca-certificates coreutils curl fd-find file findutils git jq less \\
   procps python3 python3-pip ripgrep tree unzip zip \\
   && rm -rf /var/lib/apt/lists/*
+RUN npm install --global corepack && corepack enable
 WORKDIR /workspace
 CMD ["sleep", "infinity"]
 `;
@@ -107,11 +115,13 @@ export function makeAgentContainerManager(
   config: ServerConfig["Service"],
   podman: PodmanBackend = localPodmanBackend,
 ) {
-  const image = process.env.T3CODE_AGENT_CONTAINER_IMAGE?.trim() || DEFAULT_IMAGE;
+  const defaultImage = process.env.T3CODE_AGENT_CONTAINER_IMAGE?.trim() || DEFAULT_IMAGE;
   const configurationDirectory = NodePath.join(config.stateDir, "agent-containers");
 
   const configurationPath = (id: AgentContainerId) =>
     NodePath.join(configurationDirectory, `${Buffer.from(String(id)).toString("base64url")}.json`);
+  const worktreeSourceForProject = (projectPath: string) =>
+    NodePath.join(config.worktreesDir, NodePath.basename(projectPath));
 
   const networkAvailability = Effect.fn("AgentContainerManager.networkAvailability")(function* (
     operation: AgentContainerError["operation"],
@@ -122,9 +132,29 @@ export function makeAgentContainerManager(
     });
   });
 
+  const resolveProfile = Effect.fn("AgentContainerManager.resolveProfile")(function* (
+    projectPath: string,
+    operation: AgentContainerError["operation"],
+  ) {
+    return yield* Effect.tryPromise({
+      try: () =>
+        resolveAgentContainerProfile({
+          stateDir: config.stateDir,
+          projectPath,
+          projectResourceRoot: NodePath.join(
+            worktreeSourceForProject(projectPath),
+            ".t3-container-resources",
+          ),
+          defaultImage,
+        }),
+      catch: (cause) => error(operation, cause instanceof Error ? cause.message : String(cause)),
+    });
+  });
+
   const readConfiguration = Effect.fn("AgentContainerManager.readConfiguration")(function* (
     id: AgentContainerId,
-    workspacePath: string,
+    fallbackWorkspacePath: string,
+    expectedWorkspacePath?: string,
   ) {
     const contents = yield* Effect.tryPromise({
       try: () =>
@@ -139,7 +169,7 @@ export function makeAgentContainerManager(
     if (contents === undefined) {
       return {
         id,
-        workspacePath,
+        workspacePath: fallbackWorkspacePath,
         networkPolicy: "",
       } satisfies AgentContainerConfiguration;
     }
@@ -150,10 +180,10 @@ export function makeAgentContainerManager(
         error("configure", `Invalid stored configuration for '${id}': ${String(cause)}`),
       ),
     );
-    if (stored.workspacePath !== workspacePath) {
+    if (expectedWorkspacePath && stored.workspacePath !== expectedWorkspacePath) {
       return yield* error(
         "configure",
-        `Container '${id}' belongs to '${stored.workspacePath}', not '${workspacePath}'.`,
+        `Container '${id}' belongs to '${stored.workspacePath}', not '${expectedWorkspacePath}'.`,
       );
     }
     return {
@@ -229,7 +259,7 @@ export function makeAgentContainerManager(
       if (!id || !workspacePath)
         return Effect.succeed<AgentContainerSummary | undefined>(undefined);
       return Effect.map(
-        readConfiguration(AgentContainerId.make(id), workspacePath),
+        readConfiguration(AgentContainerId.make(id), workspacePath, workspacePath),
         (configuration) => toSummary(entry, configuration.networkPolicy),
       );
     })).flatMap((container) => (container ? [container] : []));
@@ -240,13 +270,13 @@ export function makeAgentContainerManager(
     };
   });
 
-  const ensureImage = Effect.fn("AgentContainerManager.ensureImage")(function* () {
+  const ensureImage = Effect.fn("AgentContainerManager.ensureImage")(function* (image: string) {
     const exists = yield* Effect.tryPromise({
       try: () => podman.run(["image", "exists", image]),
       catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
     });
     if (exists.exitCode === 0) return;
-    if (image !== DEFAULT_IMAGE)
+    if (image !== defaultImage || defaultImage !== DEFAULT_IMAGE)
       return yield* error("create", `Configured container image '${image}' does not exist.`);
     const buildDir = NodePath.join(config.stateDir, "agent-container-image");
     yield* Effect.tryPromise({
@@ -272,6 +302,52 @@ export function makeAgentContainerManager(
     });
     if (built.exitCode !== 0) return yield* error("create", built.stderr);
   });
+
+  const prepareProfileDirectories = Effect.fn("AgentContainerManager.prepareProfileDirectories")(
+    function* (projectPath: string, profile: AgentContainerProfile) {
+      const worktreeSource = worktreeSourceForProject(projectPath);
+      yield* Effect.tryPromise({
+        try: () =>
+          Promise.all(
+            [worktreeSource, ...profile.resources.map((resource) => resource.source)].map((path) =>
+              NodeFSP.mkdir(path, { recursive: true, mode: 0o700 }),
+            ),
+          ),
+        catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
+      });
+      return worktreeSource;
+    },
+  );
+
+  const resolveContainerCwd = Effect.fn("AgentContainerManager.resolveContainerCwd")(function* (
+    projectPath: string,
+    requestedPath: string,
+  ) {
+    if (requestedPath === projectPath) return "/workspace";
+    const worktreeSource = worktreeSourceForProject(projectPath);
+    const relative = NodePath.relative(worktreeSource, requestedPath);
+    if (!relative || relative === ".." || relative.startsWith(`..${NodePath.sep}`)) {
+      return yield* error(
+        "create",
+        `Workspace '${requestedPath}' is neither project '${projectPath}' nor one of its T3 worktrees.`,
+      );
+    }
+    return NodePath.posix.join("/t3/worktrees", ...relative.split(NodePath.sep));
+  });
+
+  const resourceMountArguments = (
+    resource: AgentContainerProfile["resources"][number],
+    worktreeSource: string,
+  ): ReadonlyArray<string> => {
+    const relative = NodePath.relative(worktreeSource, resource.source);
+    const mappedTarget =
+      relative && relative !== ".." && !relative.startsWith(`..${NodePath.sep}`)
+        ? NodePath.posix.join("/t3/worktrees", ...relative.split(NodePath.sep))
+        : null;
+    return mappedTarget === resource.target
+      ? []
+      : ["--volume", `${resource.source}:${resource.target}:${resource.readOnly ? "ro" : "rw"}`];
+  };
 
   const installNetworkPolicy = Effect.fn("AgentContainerManager.installNetworkPolicy")(function* (
     container: typeof InspectContainer.Type,
@@ -328,6 +404,7 @@ export function makeAgentContainerManager(
       try: () => NodeFSP.realpath(input.workspacePath),
       catch: (cause) => error("configure", cause instanceof Error ? cause.message : String(cause)),
     });
+    yield* resolveProfile(workspacePath, "configure");
     const policy = yield* Effect.try({
       try: () => parseNetworkPolicy(input.networkPolicy),
       catch: (cause) => error("configure", cause instanceof Error ? cause.message : String(cause)),
@@ -373,23 +450,50 @@ export function makeAgentContainerManager(
 
   const executionEnvironment = Effect.fn("AgentContainerManager.executionEnvironment")(
     function* (input: { readonly id: AgentContainerId; readonly workspacePath: string }) {
-      const workspacePath = yield* Effect.tryPromise({
+      const requestedWorkspacePath = yield* Effect.tryPromise({
         try: () => NodeFSP.realpath(input.workspacePath),
         catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
       });
       const existing = (yield* inspectManaged()).find(
         (entry) => entry.Config.Labels[ID_LABEL] === input.id,
       );
-      const configuration = yield* readConfiguration(input.id, workspacePath);
+      const configuration = yield* readConfiguration(
+        input.id,
+        existing?.Config.Labels[WORKSPACE_LABEL] ?? requestedWorkspacePath,
+      );
+      const projectPath = yield* Effect.tryPromise({
+        try: () => NodeFSP.realpath(configuration.workspacePath),
+        catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
+      });
+      const profile = yield* resolveProfile(projectPath, "create");
+      const worktreeSource = yield* prepareProfileDirectories(projectPath, profile);
+      const containerCwd = yield* resolveContainerCwd(projectPath, requestedWorkspacePath);
       let name: string;
       let runningContainer: typeof InspectContainer.Type;
+      let environment: Readonly<Record<string, string>> = profile.environment;
       if (existing) {
         const existingWorkspace = existing.Config.Labels[WORKSPACE_LABEL];
-        if (existingWorkspace !== workspacePath) {
+        if (existingWorkspace !== projectPath) {
           return yield* error(
             "create",
-            `Container '${input.id}' belongs to '${existingWorkspace}', not '${workspacePath}'.`,
+            `Container '${input.id}' belongs to '${existingWorkspace}', not '${projectPath}'.`,
           );
+        }
+        const existingProfile = existing.Config.Labels[PROFILE_LABEL];
+        if (existingProfile && existingProfile !== profile.fingerprint) {
+          return yield* error(
+            "create",
+            "This container's development resources changed. Create a new container to apply the new image or mounts.",
+          );
+        }
+        if (!existingProfile) {
+          if (containerCwd !== "/workspace") {
+            return yield* error(
+              "create",
+              "This container predates worktree mounts. Create a new container for worktree access.",
+            );
+          }
+          environment = {};
         }
         name = existing.Name.replace(/^\//, "");
         if (existing.State.Status !== "running") {
@@ -412,30 +516,41 @@ export function makeAgentContainerManager(
         if (!networking.available) {
           return yield* error("create", networking.reason ?? "Podman networking is unavailable.");
         }
-        yield* ensureImage();
+        yield* ensureImage(profile.image);
         name = `t3-agent-${String(input.id)
           .replace(/[^a-zA-Z0-9_.-]/g, "-")
           .slice(0, 48)}`;
+        const createArgs = [
+          "create",
+          "--name",
+          name,
+          "--label",
+          `${MANAGED_LABEL}=true`,
+          "--label",
+          `${ID_LABEL}=${input.id}`,
+          "--label",
+          `${WORKSPACE_LABEL}=${projectPath}`,
+          "--label",
+          `${PROFILE_LABEL}=${profile.fingerprint}`,
+          "--network",
+          "pasta:--no-map-gw",
+          "--volume",
+          `${projectPath}:/workspace:rw`,
+          "--volume",
+          `${worktreeSource}:/t3/worktrees:rw`,
+          ...profile.resources.flatMap((resource) =>
+            resourceMountArguments(resource, worktreeSource),
+          ),
+          ...Object.entries(profile.environment).flatMap(([key, value]) => [
+            "--env",
+            `${key}=${value}`,
+          ]),
+          "--workdir",
+          "/workspace",
+          profile.image,
+        ];
         const created = yield* Effect.tryPromise({
-          try: () =>
-            podman.run([
-              "create",
-              "--name",
-              name,
-              "--label",
-              `${MANAGED_LABEL}=true`,
-              "--label",
-              `${ID_LABEL}=${input.id}`,
-              "--label",
-              `${WORKSPACE_LABEL}=${workspacePath}`,
-              "--network",
-              "pasta:--no-map-gw",
-              "--volume",
-              `${workspacePath}:/workspace:rw`,
-              "--workdir",
-              "/workspace",
-              image,
-            ]),
+          try: () => podman.run(createArgs),
           catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
         });
         if (created.exitCode !== 0) return yield* error("create", created.stderr);
@@ -452,11 +567,11 @@ export function makeAgentContainerManager(
       }
       yield* installNetworkPolicy(runningContainer, configuration.networkPolicy);
       const probe = yield* Effect.tryPromise({
-        try: () => podman.run(["exec", "--workdir", "/workspace", name, "python3", "--version"]),
+        try: () => podman.run(["exec", "--workdir", containerCwd, name, "python3", "--version"]),
         catch: (cause) => error("exec", cause instanceof Error ? cause.message : String(cause)),
       });
       if (probe.exitCode !== 0) return yield* error("exec", probe.stderr);
-      return new PodmanExecutionEnv(name, podman);
+      return new PodmanExecutionEnv(name, podman, environment, containerCwd);
     },
   );
 

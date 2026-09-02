@@ -74,7 +74,7 @@ function fileError(path: string, stderr: Buffer): FileError {
 }
 
 export class PodmanExecutionEnv implements ExecutionEnv {
-  readonly cwd = "/workspace";
+  readonly cwd: string;
   private readonly containerName: string;
   private readonly podman: PodmanBackend;
   private readonly defaultEnv: Readonly<Record<string, string>>;
@@ -85,11 +85,13 @@ export class PodmanExecutionEnv implements ExecutionEnv {
     containerName: string,
     podman: PodmanBackend = localPodmanBackend,
     defaultEnv: Readonly<Record<string, string>> = {},
+    cwd = "/workspace",
     portForwarder: HostPortForwarder = hostPortForwarder,
   ) {
     this.containerName = containerName;
     this.podman = podman;
     this.defaultEnv = defaultEnv;
+    this.cwd = cwd;
     this.portForwarder = portForwarder;
   }
 
@@ -390,7 +392,7 @@ export class PodmanExecutionEnv implements ExecutionEnv {
       `${key}=${value}`,
     ]);
     try {
-      const result = await this.run(["--workdir", cwd, ...envArgs], ["/bin/bash", "-lc", command], {
+      const result = await this.run(["--workdir", cwd, ...envArgs], ["/bin/bash", "-c", command], {
         ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
         ...(options.timeout === undefined ? {} : { timeoutMs: options.timeout * 1_000 }),
         ...(options.onStdout ? { onStdout: options.onStdout } : {}),

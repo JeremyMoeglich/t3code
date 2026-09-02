@@ -530,11 +530,7 @@ export const BranchToolbar = memo(function BranchToolbar({
       {showExecutionTarget ? (
         <BranchToolbarExecutionTargetSelector
           environmentId={environmentId}
-          workspacePath={
-            effectiveEnvMode === "worktree" && activeWorktreePath === null
-              ? null
-              : (activeWorktreePath ?? activeProject.workspaceRoot)
-          }
+          workspacePath={activeProject.workspaceRoot}
           value={executionTarget}
           locked={executionTargetLocked}
           onChange={onExecutionTargetChange}

@@ -38,6 +38,7 @@ it.runIf(process.env.T3_LIVE_PODMAN_NETWORK === "1")(
     const id = AgentContainerId.make(`live-${process.pid}`);
     const manager = makeAgentContainerManager({
       stateDir: NodePath.join(root, "state"),
+      worktreesDir: NodePath.join(root, "worktrees"),
     } as ServerConfig["Service"]);
     try {
       await Effect.runPromise(manager.configure({ id, workspacePath, networkPolicy: "" }));
@@ -112,7 +113,7 @@ it.runIf(process.env.T3_LIVE_PODMAN === "1")(
         `${root}:/workspace:rw`,
         "--workdir",
         "/workspace",
-        "localhost/t3code-agent-base:latest",
+        "localhost/t3code-agent-base:3",
       ]);
       assert.equal(created.exitCode, 0);
       assert.equal((await localPodmanBackend.run(["start", name])).exitCode, 0);
