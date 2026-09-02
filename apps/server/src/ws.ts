@@ -1068,9 +1068,11 @@ const makeWsRpcLayer = (
                   remoteName: "origin",
                 }));
               if (startFromOrigin) {
-                yield* gitWorkflow.fetchRemote({
+                const remoteBranch = bootstrap.prepareWorktree.baseBranch.replace(/^origin\//, "");
+                yield* gitWorkflow.fetchRemoteTrackingBranch({
                   cwd: bootstrap.prepareWorktree.projectCwd,
                   remoteName: "origin",
+                  remoteBranch,
                 });
                 const resolvedRemoteBase = yield* gitWorkflow.resolveRemoteTrackingCommit({
                   cwd: bootstrap.prepareWorktree.projectCwd,

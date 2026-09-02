@@ -8013,8 +8013,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               return true;
             }),
         );
-        const fetchRemote = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"]>[0]) =>
+        const fetchRemoteTrackingBranch = vi.fn(
+          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemoteTrackingBranch"]>[0]) =>
             Effect.sync(() => {
               bootstrapGitOperations.push("fetch");
             }),
@@ -8061,7 +8061,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           layers: {
             gitVcsDriver: {
               remoteExists,
-              fetchRemote,
+              fetchRemoteTrackingBranch,
               resolveRemoteTrackingCommit,
               createWorktree,
             },
@@ -8141,9 +8141,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           baseRefName: "main",
           path: null,
         });
-        assert.deepEqual(fetchRemote.mock.calls[0]?.[0], {
+        assert.deepEqual(fetchRemoteTrackingBranch.mock.calls[0]?.[0], {
           cwd: "/tmp/project",
           remoteName: "origin",
+          remoteBranch: "main",
         });
         assert.deepEqual(resolveRemoteTrackingCommit.mock.calls[0]?.[0], {
           cwd: "/tmp/project",
@@ -8189,8 +8190,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["remoteExists"]>[0]) =>
             Effect.succeed(false),
         );
-        const fetchRemote = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"]>[0]) => Effect.void,
+        const fetchRemoteTrackingBranch = vi.fn(
+          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemoteTrackingBranch"]>[0]) =>
+            Effect.void,
         );
         const resolveRemoteTrackingCommit = vi.fn(
           (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["resolveRemoteTrackingCommit"]>[0]) =>
@@ -8213,7 +8215,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           layers: {
             gitVcsDriver: {
               remoteExists,
-              fetchRemote,
+              fetchRemoteTrackingBranch,
               resolveRemoteTrackingCommit,
               createWorktree,
             },
@@ -8272,7 +8274,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           cwd: "/tmp/project",
           remoteName: "origin",
         });
-        assert.equal(fetchRemote.mock.calls.length, 0);
+        assert.equal(fetchRemoteTrackingBranch.mock.calls.length, 0);
         assert.equal(resolveRemoteTrackingCommit.mock.calls.length, 0);
         assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
           cwd: "/tmp/project",

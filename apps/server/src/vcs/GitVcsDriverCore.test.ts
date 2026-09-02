@@ -1640,6 +1640,56 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("remote operations", () => {
+    it.effect("materializes a requested branch outside a narrow remote fetch refspec", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-remote-");
+        const peer = yield* makeTmpDir("git-peer-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* git(remote, ["symbolic-ref", "HEAD", `refs/heads/${initialBranch}`]);
+
+        yield* git(peer, ["clone", remote, "."]);
+        yield* git(peer, ["config", "user.email", "test@test.com"]);
+        yield* git(peer, ["config", "user.name", "Test"]);
+        yield* git(peer, ["switch", "-c", "feat/narrow"]);
+        yield* writeTextFile(peer, "feature.txt", "feature\n");
+        yield* git(peer, ["add", "feature.txt"]);
+        yield* git(peer, ["commit", "-m", "feature"]);
+        yield* git(peer, ["push", "origin", "feat/narrow"]);
+        const remoteHead = yield* git(peer, ["rev-parse", "HEAD"]);
+
+        yield* git(cwd, [
+          "config",
+          "remote.origin.fetch",
+          `+refs/heads/${initialBranch}:refs/remotes/origin/${initialBranch}`,
+        ]);
+        yield* git(cwd, ["fetch", "origin"]);
+        assert.notInclude(
+          yield* git(cwd, ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]),
+          "refs/remotes/origin/feat/narrow",
+        );
+
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.fetchRemoteTrackingBranch({
+          cwd,
+          remoteName: "origin",
+          remoteBranch: "feat/narrow",
+        });
+        const resolved = yield* driver.resolveRemoteTrackingCommit({
+          cwd,
+          refName: "feat/narrow",
+          fallbackRemoteName: "origin",
+        });
+        assert.deepEqual(resolved, {
+          commitSha: remoteHead,
+          remoteRefName: "origin/feat/narrow",
+        });
+      }),
+    );
+
     it.effect("creates a worktree from the latest fetched remote commit", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
