@@ -390,7 +390,7 @@ export function BranchToolbarBranchSelector({
   };
 
   const selectBranch = (refName: VcsRef) => {
-    if (!branchCwd || !activeProjectCwd || isBranchActionPending) return;
+    if (!branchCwd || !activeProjectCwd || envLocked || isBranchActionPending) return;
 
     if (isSelectingWorktreeBase) {
       setThreadBranch(refName.name, null);
@@ -452,7 +452,7 @@ export function BranchToolbarBranchSelector({
 
   const createRef = (rawName: string) => {
     const name = sanitizeNewRefName(rawName);
-    if (!branchCwd || !name || isBranchActionPending) return;
+    if (!branchCwd || !name || envLocked || isBranchActionPending) return;
 
     setIsBranchMenuOpen(false);
     onComposerFocusRequest?.();
@@ -760,7 +760,7 @@ export function BranchToolbarBranchSelector({
           <ComboboxTrigger
             render={<Button variant="ghost" size="xs" />}
             className="min-w-0 max-w-full text-muted-foreground/70 hover:text-foreground/80"
-            disabled={isInitialBranchesLoadPending || isBranchActionPending}
+            disabled={envLocked || isInitialBranchesLoadPending || isBranchActionPending}
           >
             <GitBranchIcon className="size-3 shrink-0 opacity-70" />
             <span

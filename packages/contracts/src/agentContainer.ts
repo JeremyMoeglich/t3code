@@ -5,6 +5,19 @@ import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
 export const AgentContainerId = TrimmedNonEmptyString.pipe(Schema.brand("AgentContainerId"));
 export type AgentContainerId = typeof AgentContainerId.Type;
 
+export const AgentContainerImageId = TrimmedNonEmptyString.pipe(
+  Schema.brand("AgentContainerImageId"),
+);
+export type AgentContainerImageId = typeof AgentContainerImageId.Type;
+export const DEFAULT_AGENT_CONTAINER_IMAGE_ID = AgentContainerImageId.make("t3-default");
+
+export const AgentContainerImageDefinition = Schema.Struct({
+  id: AgentContainerImageId,
+  name: TrimmedNonEmptyString,
+  source: Schema.Literals(["builtin", "folder"]),
+});
+export type AgentContainerImageDefinition = typeof AgentContainerImageDefinition.Type;
+
 export const ThreadExecutionTarget = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("host") }),
   Schema.Struct({
@@ -22,6 +35,7 @@ export const AgentContainerSummary = Schema.Struct({
   name: TrimmedNonEmptyString,
   workspacePath: TrimmedNonEmptyString,
   image: TrimmedNonEmptyString,
+  imageId: Schema.optional(AgentContainerImageId),
   networkPolicy: Schema.String,
   status: AgentContainerStatus,
   createdAt: IsoDateTime,
@@ -32,6 +46,8 @@ export const AgentContainerListResult = Schema.Struct({
   available: Schema.Boolean,
   unavailableReason: Schema.optional(TrimmedNonEmptyString),
   containers: Schema.Array(AgentContainerSummary),
+  imagesDirectory: Schema.optional(TrimmedNonEmptyString),
+  images: Schema.optional(Schema.Array(AgentContainerImageDefinition)),
 });
 export type AgentContainerListResult = typeof AgentContainerListResult.Type;
 
@@ -39,6 +55,7 @@ export const AgentContainerConfigureInput = Schema.Struct({
   id: AgentContainerId,
   workspacePath: TrimmedNonEmptyString,
   networkPolicy: Schema.String,
+  imageId: Schema.optional(AgentContainerImageId),
 });
 export type AgentContainerConfigureInput = typeof AgentContainerConfigureInput.Type;
 
@@ -46,6 +63,7 @@ export const AgentContainerConfiguration = Schema.Struct({
   id: AgentContainerId,
   workspacePath: TrimmedNonEmptyString,
   networkPolicy: Schema.String,
+  imageId: Schema.optional(AgentContainerImageId),
 });
 export type AgentContainerConfiguration = typeof AgentContainerConfiguration.Type;
 

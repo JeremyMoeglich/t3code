@@ -1,3 +1,8 @@
+import {
+  DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+  type AgentContainerImageDefinition,
+  AgentContainerImageId,
+} from "@t3tools/contracts";
 import { BoxIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -12,6 +17,7 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 import { Radio, RadioGroup } from "./ui/radio-group";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { Textarea } from "./ui/textarea";
 
 export const UNRESTRICTED_NETWORK_POLICY = "allow 0.0.0.0/0\nallow ::/0";
@@ -28,19 +34,26 @@ interface AgentContainerNetworkDialogProps {
   open: boolean;
   creating: boolean;
   initialPolicy: string;
+  initialImageId?: AgentContainerImageId;
+  images: ReadonlyArray<AgentContainerImageDefinition>;
+  imagesDirectory?: string;
   onOpenChange: (open: boolean) => void;
-  onSave: (networkPolicy: string) => Promise<string | null>;
+  onSave: (networkPolicy: string, imageId: AgentContainerImageId) => Promise<string | null>;
 }
 
 export function AgentContainerNetworkDialog({
   open,
   creating,
   initialPolicy,
+  initialImageId = DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+  images,
+  imagesDirectory,
   onOpenChange,
   onSave,
 }: AgentContainerNetworkDialogProps) {
   const [preset, setPreset] = useState<NetworkPreset>(() => presetFor(initialPolicy));
   const [customPolicy, setCustomPolicy] = useState(initialPolicy);
+  const [imageId, setImageId] = useState(initialImageId);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -48,8 +61,9 @@ export function AgentContainerNetworkDialog({
     if (!open) return;
     setPreset(presetFor(initialPolicy));
     setCustomPolicy(initialPolicy);
+    setImageId(initialImageId);
     setError(null);
-  }, [initialPolicy, open]);
+  }, [initialImageId, initialPolicy, open]);
 
   const policy =
     preset === "offline" ? "" : preset === "internet" ? UNRESTRICTED_NETWORK_POLICY : customPolicy;
@@ -68,6 +82,34 @@ export function AgentContainerNetworkDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-4">
+          {creating ? (
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="agent-container-image">
+                Image
+              </label>
+              <Select
+                value={imageId}
+                items={images.map((image) => ({ value: image.id, label: image.name }))}
+                onValueChange={(value) => value && setImageId(AgentContainerImageId.make(value))}
+              >
+                <SelectTrigger id="agent-container-image" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectPopup>
+                  {images.map((image) => (
+                    <SelectItem key={image.id} value={image.id}>
+                      {image.name}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+              {imagesDirectory ? (
+                <p className="break-all text-xs text-muted-foreground">
+                  Add image folders containing a Containerfile under {imagesDirectory}.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <RadioGroup value={preset} onValueChange={(value) => setPreset(value as NetworkPreset)}>
             <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3">
               <Radio value="offline" />
@@ -128,7 +170,7 @@ export function AgentContainerNetworkDialog({
             onClick={() => {
               setSaving(true);
               setError(null);
-              void onSave(policy).then((message) => {
+              void onSave(policy, imageId).then((message) => {
                 setSaving(false);
                 if (message) setError(message);
                 else onOpenChange(false);

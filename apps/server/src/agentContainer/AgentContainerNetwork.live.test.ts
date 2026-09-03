@@ -37,6 +37,7 @@ it.runIf(process.env.T3_LIVE_PODMAN_NETWORK === "1")(
     await NodeFSP.mkdir(workspacePath);
     const id = AgentContainerId.make(`live-${process.pid}`);
     const manager = makeAgentContainerManager({
+      baseDir: root,
       stateDir: NodePath.join(root, "state"),
       worktreesDir: NodePath.join(root, "worktrees"),
     } as ServerConfig["Service"]);

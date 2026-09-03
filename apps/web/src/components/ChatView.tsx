@@ -2843,6 +2843,14 @@ function ChatViewContent(props: ChatViewProps) {
           input: { cwd: gitStatusCwd },
         }),
   );
+  const projectGitStatusQuery = useEnvironmentQuery(
+    activeProject && activeThread?.worktreePath
+      ? vcsEnvironment.status({
+          environmentId,
+          input: { cwd: activeProject.workspaceRoot },
+        })
+      : null,
+  );
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const availableEditors = useAtomValue(primaryServerAvailableEditorsAtom);
   // Prefer an instance-id match so a custom Codex instance (e.g.
@@ -2984,13 +2992,14 @@ function ChatViewContent(props: ChatViewProps) {
     (activeThread.messages.length > 0 ||
       (activeThread.session !== null && activeThread.session.status !== "stopped")),
   );
-  const executionTarget = activeThread?.executionTarget ?? { kind: "host" };
-  const showExecutionTarget = activeProviderStatus?.supportsAgentContainers === true;
-  const executionTargetLocked = Boolean(
+  const workspaceLocked = Boolean(
     isSendBusy ||
     activeThread?.session?.status === "starting" ||
     activeThread?.session?.status === "running",
   );
+  const executionTarget = activeThread?.executionTarget ?? { kind: "host" };
+  const showExecutionTarget = activeProviderStatus?.supportsAgentContainers === true;
+  const executionTargetLocked = workspaceLocked;
   const onExecutionTargetChange = useCallback(
     (target: ThreadExecutionTarget) => {
       if (!activeThread || executionTargetLocked) return;
@@ -4458,11 +4467,7 @@ function ChatViewContent(props: ChatViewProps) {
     draftThreadEnvMode: isLocalDraftThread ? draftThread?.envMode : undefined,
   });
   const canOverrideServerThreadEnvMode = Boolean(
-    isServerThread &&
-    activeThread &&
-    activeThread.messages.length === 0 &&
-    activeThread.worktreePath === null &&
-    !envLocked,
+    isServerThread && activeThread && !workspaceLocked,
   );
   const envMode: DraftThreadEnvMode = canOverrideServerThreadEnvMode
     ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
@@ -5754,14 +5759,11 @@ function ChatViewContent(props: ChatViewProps) {
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
-        ? activeThreadBranch
-        : null;
+      sendEnvMode === "worktree" && !activeThread.worktreePath ? activeThreadBranch : null;
 
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
-    const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
+    const shouldCreateWorktree = sendEnvMode === "worktree" && !activeThread.worktreePath;
     if (shouldCreateWorktree && !activeThreadBranch) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
@@ -6826,8 +6828,27 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
-      if (canOverrideServerThreadEnvMode) {
+      if (canOverrideServerThreadEnvMode && activeThread) {
         setPendingServerThreadEnvMode(mode);
+        if (mode === "local" && activeThread.worktreePath !== null) {
+          void updateThreadMetadata({
+            environmentId: activeThread.environmentId,
+            input: {
+              threadId: activeThread.id,
+              branch: projectGitStatusQuery.data?.refName ?? activeThread.branch,
+              worktreePath: null,
+            },
+          }).then((result) => {
+            if (result._tag === "Failure") {
+              setPendingServerThreadEnvMode(null);
+              toastManager.add({
+                type: "error",
+                title: "Could not change workspace",
+                description: String(squashAtomCommandFailure(result)),
+              });
+            }
+          });
+        }
         scheduleComposerFocus();
         return;
       }
@@ -6844,14 +6865,17 @@ function ChatViewContent(props: ChatViewProps) {
       scheduleComposerFocus();
     },
     [
+      activeThread,
       canOverrideServerThreadEnvMode,
       composerDraftTarget,
       draftThread?.worktreePath,
       isLocalDraftThread,
       primaryServerSettings.newWorktreesStartFromOrigin,
+      projectGitStatusQuery.data?.refName,
       setPendingServerThreadEnvMode,
       scheduleComposerFocus,
       setDraftThreadContext,
+      updateThreadMetadata,
     ],
   );
 
@@ -7377,6 +7401,7 @@ function ChatViewContent(props: ChatViewProps) {
                                     }
                                   : {})}
                                 envLocked={envLocked}
+                                workspaceLocked={workspaceLocked}
                                 showExecutionTarget={showExecutionTarget}
                                 executionTarget={executionTarget}
                                 executionTargetLocked={executionTargetLocked}

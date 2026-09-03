@@ -54,6 +54,7 @@ interface BranchToolbarProps {
   startFromOrigin: boolean;
   onStartFromOriginChange: (startFromOrigin: boolean) => void;
   envLocked: boolean;
+  workspaceLocked: boolean;
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest?: () => void;
   availableEnvironments?: readonly EnvironmentOption[];
@@ -108,7 +109,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
     : effectiveEnvMode === "worktree"
       ? resolveEnvModeLabel("worktree")
       : resolveCurrentWorkspaceLabel(activeWorktreePath);
-  const isLocked = envLocked || envModeLocked;
+  const isLocked = envLocked && envModeLocked;
   const EnvironmentIcon = activeEnvironment?.isPrimary ? MonitorIcon : CloudIcon;
   const icon = showEnvironmentIndicator ? (
     // Button's base styles apply `-mx-0.5` to descendant SVGs, which eats 4px
@@ -390,6 +391,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   startFromOrigin,
   onStartFromOriginChange,
   envLocked,
+  workspaceLocked,
   onCheckoutPullRequestRequest,
   onComposerFocusRequest,
   availableEnvironments,
@@ -423,11 +425,10 @@ export const BranchToolbar = memo(function BranchToolbar({
       hasServerThread: serverThread !== null,
       draftThreadEnvMode: draftThread?.envMode,
     });
-  const envModeLocked = envLocked || (serverThread !== null && activeWorktreePath !== null);
+  const envModeLocked = workspaceLocked;
 
-  // "Previous worktree" hops a draft into the most recently active worktree
-  // of this project — the "keep going where I just was" follow-up flow. Only
-  // drafts can hop; started server threads have their workspace pinned.
+  // "Previous worktree" is a draft convenience; started threads can select
+  // their workspace directly between turns.
   const canUsePreviousWorktree = draftThread !== null && serverThread === null && !envModeLocked;
   const projectRefsForWorktreeLookup = useMemo(
     () => (canUsePreviousWorktree && activeProjectRef ? [activeProjectRef] : []),
@@ -543,7 +544,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           environmentId={environmentId}
           threadId={threadId}
           {...(draftId ? { draftId } : {})}
-          envLocked={envLocked}
+          envLocked={workspaceLocked}
           {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
           {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
           {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}

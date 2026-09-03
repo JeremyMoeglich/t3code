@@ -5,6 +5,8 @@ import {
   type AgentContainerConfigureInput,
   AgentContainerError,
   AgentContainerId,
+  AgentContainerImageId,
+  DEFAULT_AGENT_CONTAINER_IMAGE_ID,
   type AgentContainerListResult,
   type AgentContainerSummary,
 } from "@t3tools/contracts";
@@ -21,6 +23,7 @@ import {
   type AgentContainerProfile,
   resolveAgentContainerProfile,
 } from "./AgentContainerProfile.ts";
+import { type AgentContainerImage, listAgentContainerImages } from "./AgentContainerImages.ts";
 import { PodmanExecutionEnv } from "./PodmanExecutionEnv.ts";
 import { localPodmanBackend, type PodmanBackend } from "./PodmanBackend.ts";
 import { expandDnsRules, parseNetworkPolicy, renderNftables } from "./NetworkPolicy.ts";
@@ -62,8 +65,16 @@ const StoredConfiguration = Schema.Struct({
   id: AgentContainerId,
   workspacePath: Schema.String,
   networkPolicy: Schema.String,
+  imageId: Schema.optional(AgentContainerImageId),
+  createdAt: Schema.optional(Schema.String),
 });
-const encodeStoredConfiguration = Schema.encodeSync(Schema.fromJsonString(StoredConfiguration));
+const StoredConfigurationJson = Schema.fromJsonString(StoredConfiguration);
+const encodeStoredConfiguration = Schema.encodeSync(StoredConfigurationJson);
+const decodeStoredConfiguration = Schema.decodeUnknownEffect(StoredConfigurationJson);
+const decodeStoredConfigurationSync = Schema.decodeUnknownSync(StoredConfigurationJson);
+const decodeInspectContainers = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(InspectContainer)),
+);
 
 function error(operation: AgentContainerError["operation"], message: string) {
   return new AgentContainerError({
@@ -81,7 +92,7 @@ function status(value: string): AgentContainerSummary["status"] {
 
 function toSummary(
   value: typeof InspectContainer.Type,
-  networkPolicy: string,
+  configuration: AgentContainerConfiguration,
 ): AgentContainerSummary | undefined {
   const id = value.Config.Labels[ID_LABEL];
   const workspacePath = value.Config.Labels[WORKSPACE_LABEL];
@@ -91,7 +102,8 @@ function toSummary(
     name: value.Name.replace(/^\//, ""),
     workspacePath,
     image: value.Config.Image,
-    networkPolicy,
+    ...(configuration.imageId ? { imageId: configuration.imageId } : {}),
+    networkPolicy: configuration.networkPolicy,
     status: status(value.State.Status),
     createdAt: value.Created,
   };
@@ -117,9 +129,14 @@ export function makeAgentContainerManager(
 ) {
   const defaultImage = process.env.T3CODE_AGENT_CONTAINER_IMAGE?.trim() || DEFAULT_IMAGE;
   const configurationDirectory = NodePath.join(config.stateDir, "agent-containers");
+  const imagesDirectory = NodePath.join(config.baseDir, "container-images");
 
   const configurationPath = (id: AgentContainerId) =>
     NodePath.join(configurationDirectory, `${Buffer.from(String(id)).toString("base64url")}.json`);
+  const containerName = (id: AgentContainerId) =>
+    `t3-agent-${String(id)
+      .replace(/[^a-zA-Z0-9_.-]/g, "-")
+      .slice(0, 48)}`;
   const worktreeSourceForProject = (projectPath: string) =>
     NodePath.join(config.worktreesDir, NodePath.basename(projectPath));
 
@@ -128,6 +145,15 @@ export function makeAgentContainerManager(
   ) {
     return yield* Effect.tryPromise({
       try: () => podman.networkAvailability(),
+      catch: (cause) => error(operation, cause instanceof Error ? cause.message : String(cause)),
+    });
+  });
+
+  const listImages = Effect.fn("AgentContainerManager.listImages")(function* (
+    operation: AgentContainerError["operation"],
+  ) {
+    return yield* Effect.tryPromise({
+      try: () => listAgentContainerImages(imagesDirectory),
       catch: (cause) => error(operation, cause instanceof Error ? cause.message : String(cause)),
     });
   });
@@ -171,11 +197,10 @@ export function makeAgentContainerManager(
         id,
         workspacePath: fallbackWorkspacePath,
         networkPolicy: "",
+        imageId: DEFAULT_AGENT_CONTAINER_IMAGE_ID,
       } satisfies AgentContainerConfiguration;
     }
-    const stored = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(StoredConfiguration))(
-      contents,
-    ).pipe(
+    const stored = yield* decodeStoredConfiguration(contents).pipe(
       Effect.mapError((cause) =>
         error("configure", `Invalid stored configuration for '${id}': ${String(cause)}`),
       ),
@@ -190,6 +215,7 @@ export function makeAgentContainerManager(
       id: stored.id,
       workspacePath: stored.workspacePath,
       networkPolicy: stored.networkPolicy,
+      imageId: stored.imageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID,
     } satisfies AgentContainerConfiguration;
   });
 
@@ -214,6 +240,38 @@ export function makeAgentContainerManager(
     });
   });
 
+  const readStoredConfigurations = Effect.fn("AgentContainerManager.readStoredConfigurations")(
+    function* () {
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const entries = await NodeFSP.readdir(configurationDirectory, {
+            withFileTypes: true,
+          }).catch((cause: unknown) => {
+            if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return [];
+            throw cause;
+          });
+          return await Promise.all(
+            entries
+              .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+              .map(async (entry) => {
+                const path = NodePath.join(configurationDirectory, entry.name);
+                const [contents, metadata] = await Promise.all([
+                  NodeFSP.readFile(path, "utf8"),
+                  NodeFSP.stat(path),
+                ]);
+                const stored = decodeStoredConfigurationSync(contents);
+                return {
+                  ...stored,
+                  createdAt: stored.createdAt ?? metadata.mtime.toISOString(),
+                };
+              }),
+          );
+        },
+        catch: (cause) => error("list", cause instanceof Error ? cause.message : String(cause)),
+      });
+    },
+  );
+
   const inspectManaged = Effect.fn("AgentContainerManager.inspectManaged")(function* () {
     const ids = yield* Effect.tryPromise({
       try: () =>
@@ -231,13 +289,36 @@ export function makeAgentContainerManager(
       catch: (cause) => error("list", cause instanceof Error ? cause.message : String(cause)),
     });
     if (inspected.exitCode !== 0) return yield* error("list", inspected.stderr);
-    const decoded = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(Schema.Array(InspectContainer)),
-    )(inspected.stdout).pipe(Effect.mapError((cause) => error("list", String(cause))));
+    const decoded = yield* decodeInspectContainers(inspected.stdout).pipe(
+      Effect.mapError((cause) => error("list", String(cause))),
+    );
     return decoded;
   });
 
   const list = Effect.fn("AgentContainerManager.list")(function* () {
+    const images = yield* listImages("list");
+    const storedConfigurations = yield* readStoredConfigurations();
+    const configuredSummary = (
+      configuration: (typeof storedConfigurations)[number],
+    ): AgentContainerSummary => {
+      const imageId = configuration.imageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID;
+      const image = images.find((candidate) => candidate.id === imageId);
+      return {
+        id: configuration.id,
+        name: containerName(configuration.id),
+        workspacePath: configuration.workspacePath,
+        imageId,
+        image: image?.imageReference ?? defaultImage,
+        networkPolicy: configuration.networkPolicy,
+        status: "created",
+        createdAt: configuration.createdAt,
+      };
+    };
+    const publicImages = images.map(({ id, name, source }) => ({
+      id,
+      name,
+      source,
+    }));
     const version = yield* Effect.tryPromise({
       try: () => podman.run(["version", "--format", "{{.Client.Version}}"]),
       catch: (cause) => error("list", cause instanceof Error ? cause.message : String(cause)),
@@ -249,24 +330,35 @@ export function makeAgentContainerManager(
       return {
         available: false,
         unavailableReason: reason || "Podman is unavailable",
-        containers: [],
+        containers: storedConfigurations.map(configuredSummary),
+        imagesDirectory,
+        images: publicImages,
       };
     }
     const networking = yield* networkAvailability("list");
-    const containers = (yield* Effect.forEach(yield* inspectManaged(), (entry) => {
+    const actualContainers = (yield* Effect.forEach(yield* inspectManaged(), (entry) => {
       const id = entry.Config.Labels[ID_LABEL];
       const workspacePath = entry.Config.Labels[WORKSPACE_LABEL];
       if (!id || !workspacePath)
-        return Effect.succeed<AgentContainerSummary | undefined>(undefined);
+        return Effect.void as Effect.Effect<AgentContainerSummary | undefined>;
       return Effect.map(
         readConfiguration(AgentContainerId.make(id), workspacePath, workspacePath),
-        (configuration) => toSummary(entry, configuration.networkPolicy),
+        (configuration) => toSummary(entry, configuration),
       );
     })).flatMap((container) => (container ? [container] : []));
+    const actualIds = new Set(actualContainers.map((container) => container.id));
+    const containers = [
+      ...actualContainers,
+      ...storedConfigurations
+        .filter((configuration) => !actualIds.has(configuration.id))
+        .map(configuredSummary),
+    ];
     return {
       available: networking.available,
       ...(networking.reason ? { unavailableReason: networking.reason } : {}),
       containers,
+      imagesDirectory,
+      images: publicImages,
     };
   });
 
@@ -301,6 +393,38 @@ export function makeAgentContainerManager(
       catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
     });
     if (built.exitCode !== 0) return yield* error("create", built.stderr);
+  });
+
+  const prepareImage = Effect.fn("AgentContainerManager.prepareImage")(function* (
+    image: AgentContainerImage,
+    profileImage: string,
+  ) {
+    if (image.source === "builtin") {
+      yield* ensureImage(profileImage);
+      return profileImage;
+    }
+    if (!image.imageReference || !image.containerfilePath || !image.contextPath) {
+      return yield* error("create", `Container image definition '${image.id}' is incomplete.`);
+    }
+    const imageReference = image.imageReference;
+    const containerfilePath = image.containerfilePath;
+    const contextPath = image.contextPath;
+    const built = yield* Effect.tryPromise({
+      try: () =>
+        podman.run([
+          "build",
+          "--network",
+          "host",
+          "--tag",
+          imageReference,
+          "--file",
+          containerfilePath,
+          contextPath,
+        ]),
+      catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
+    });
+    if (built.exitCode !== 0) return yield* error("create", built.stderr);
+    return imageReference;
   });
 
   const prepareProfileDirectories = Effect.fn("AgentContainerManager.prepareProfileDirectories")(
@@ -405,6 +529,9 @@ export function makeAgentContainerManager(
       catch: (cause) => error("configure", cause instanceof Error ? cause.message : String(cause)),
     });
     yield* resolveProfile(workspacePath, "configure");
+    const currentConfiguration = yield* readConfiguration(input.id, workspacePath, workspacePath);
+    const imageId =
+      input.imageId ?? currentConfiguration.imageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID;
     const policy = yield* Effect.try({
       try: () => parseNetworkPolicy(input.networkPolicy),
       catch: (cause) => error("configure", cause instanceof Error ? cause.message : String(cause)),
@@ -412,11 +539,11 @@ export function makeAgentContainerManager(
     const existing = (yield* inspectManaged()).find(
       (entry) => entry.Config.Labels[ID_LABEL] === input.id,
     );
-    if (!existing) {
-      const networking = yield* networkAvailability("configure");
-      if (!networking.available) {
-        return yield* error("configure", networking.reason ?? "Podman networking is unavailable.");
-      }
+    if (!existing && !(yield* listImages("configure")).some((image) => image.id === imageId)) {
+      return yield* error(
+        "configure",
+        `Container image definition '${imageId}' was not found in '${imagesDirectory}'.`,
+      );
     }
     if (existing) {
       const existingWorkspace = existing.Config.Labels[WORKSPACE_LABEL];
@@ -424,6 +551,12 @@ export function makeAgentContainerManager(
         return yield* error(
           "configure",
           `Container '${input.id}' belongs to '${existingWorkspace}', not '${workspacePath}'.`,
+        );
+      }
+      if (imageId !== currentConfiguration.imageId) {
+        return yield* error(
+          "configure",
+          "A created container's image cannot be changed. Create a new container instead.",
         );
       }
       if (policy.rules.length > 0 && existing.HostConfig.NetworkMode === "none") {
@@ -439,12 +572,15 @@ export function makeAgentContainerManager(
       id: input.id,
       workspacePath,
       networkPolicy: policy.text,
+      imageId,
+      createdAt: new Date().toISOString(),
     } satisfies typeof StoredConfiguration.Type;
     yield* writeConfiguration(stored);
     return {
       id: stored.id,
       workspacePath: stored.workspacePath,
       networkPolicy: stored.networkPolicy,
+      imageId: stored.imageId,
     } satisfies AgentContainerConfiguration;
   });
 
@@ -516,10 +652,17 @@ export function makeAgentContainerManager(
         if (!networking.available) {
           return yield* error("create", networking.reason ?? "Podman networking is unavailable.");
         }
-        yield* ensureImage(profile.image);
-        name = `t3-agent-${String(input.id)
-          .replace(/[^a-zA-Z0-9_.-]/g, "-")
-          .slice(0, 48)}`;
+        const selectedImage = (yield* listImages("create")).find(
+          (image) => image.id === configuration.imageId,
+        );
+        if (!selectedImage) {
+          return yield* error(
+            "create",
+            `Container image definition '${configuration.imageId}' was not found in '${imagesDirectory}'.`,
+          );
+        }
+        const image = yield* prepareImage(selectedImage, profile.image);
+        name = containerName(input.id);
         const createArgs = [
           "create",
           "--name",
@@ -547,7 +690,7 @@ export function makeAgentContainerManager(
           ]),
           "--workdir",
           "/workspace",
-          profile.image,
+          image,
         ];
         const created = yield* Effect.tryPromise({
           try: () => podman.run(createArgs),

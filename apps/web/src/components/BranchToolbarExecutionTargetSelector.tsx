@@ -1,10 +1,11 @@
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
+  AgentContainerImageId,
   AgentContainerSummary,
   EnvironmentId,
   ThreadExecutionTarget,
 } from "@t3tools/contracts";
-import { AgentContainerId } from "@t3tools/contracts";
+import { AgentContainerId, DEFAULT_AGENT_CONTAINER_IMAGE_ID } from "@t3tools/contracts";
 import { BoxIcon, MonitorIcon, PlusIcon, ShieldIcon } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 
@@ -57,6 +58,13 @@ export const BranchToolbarExecutionTargetSelector = memo(
       [environmentId],
     );
     const query = useEnvironmentQuery(queryAtom);
+    const images = query.data?.images ?? [
+      {
+        id: DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+        name: "T3 default",
+        source: "builtin" as const,
+      },
+    ];
     const compatible = useMemo(
       () =>
         workspacePath
@@ -154,7 +162,7 @@ export const BranchToolbarExecutionTargetSelector = memo(
                   <MonitorIcon className="size-3" /> Host
                 </span>
               </SelectItem>
-              <SelectItem value={NEW_VALUE} disabled={locked || !podmanAvailable || !workspacePath}>
+              <SelectItem value={NEW_VALUE} disabled={locked || !workspacePath}>
                 <span className="inline-flex items-center gap-1.5">
                   <PlusIcon className="size-3" /> New container
                 </span>
@@ -200,14 +208,19 @@ export const BranchToolbarExecutionTargetSelector = memo(
           initialPolicy={
             networkDialog?.kind === "edit" ? networkDialog.container.networkPolicy : ""
           }
+          images={images}
+          {...(networkDialog?.kind === "edit" && networkDialog.container.imageId
+            ? { initialImageId: networkDialog.container.imageId }
+            : {})}
+          {...(query.data?.imagesDirectory ? { imagesDirectory: query.data.imagesDirectory } : {})}
           onOpenChange={(open) => !open && setNetworkDialog(null)}
-          onSave={async (networkPolicy) => {
+          onSave={async (networkPolicy, imageId: AgentContainerImageId) => {
             if (!networkDialog || !workspacePath) return "A workspace is required.";
             const id =
               networkDialog.kind === "create" ? networkDialog.id : networkDialog.container.id;
             const result = await configure({
               environmentId,
-              input: { id, workspacePath, networkPolicy },
+              input: { id, workspacePath, networkPolicy, imageId },
             });
             if (result._tag === "Failure") {
               const cause = squashAtomCommandFailure(result);
