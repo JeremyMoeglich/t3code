@@ -6,6 +6,8 @@ import {
 } from "@t3tools/client-runtime/environment";
 import * as Schema from "effect/Schema";
 import {
+  AgentContainerId,
+  AgentContainerImageId,
   defaultInstanceIdForDriver,
   EnvironmentId,
   ProjectId,
@@ -301,6 +303,29 @@ describe("composerDraftStore clearComposerContent", () => {
     const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
     expect(draft).toBeUndefined();
     expect(revokeSpy).not.toHaveBeenCalledWith("blob:optimistic");
+  });
+
+  it("preserves a deferred container selection after clearing sent content", () => {
+    const pendingContainerId = AgentContainerId.make("pending-container");
+    const containerImageId = AgentContainerImageId.make("node-24");
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadRef, "Start the app");
+    store.setContainerComposerState(threadRef, {
+      pendingContainerId,
+      containerImageId,
+      containerNetworkPolicy: "allow 10.0.0.0/8",
+      newContainerByDefault: true,
+    });
+
+    store.clearComposerContent(threadRef);
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toMatchObject({
+      prompt: "",
+      pendingContainerId,
+      containerImageId,
+      containerNetworkPolicy: "allow 10.0.0.0/8",
+      newContainerByDefault: true,
+    });
   });
 });
 

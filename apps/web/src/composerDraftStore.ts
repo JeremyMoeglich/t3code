@@ -1,6 +1,9 @@
 import {
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
+  AgentContainerId,
+  AgentContainerImageId,
+  DEFAULT_AGENT_CONTAINER_IMAGE_ID,
   defaultInstanceIdForDriver,
   EnvironmentId,
   ModelSelection,
@@ -66,7 +69,7 @@ const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isReviewCommentContext = Schema.is(ReviewCommentContextSchema);
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
-const COMPOSER_DRAFT_STORAGE_VERSION = 10;
+const COMPOSER_DRAFT_STORAGE_VERSION = 11;
 const DraftThreadEnvModeSchema = Schema.Literals(["local", "worktree"]);
 export type DraftThreadEnvMode = typeof DraftThreadEnvModeSchema.Type;
 
@@ -204,6 +207,10 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   modelSelectionExplicit: Schema.optionalKey(Schema.Boolean),
   runtimeMode: Schema.optionalKey(RuntimeMode),
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
+  pendingContainerId: Schema.optionalKey(AgentContainerId),
+  containerImageId: Schema.optionalKey(AgentContainerImageId),
+  containerNetworkPolicy: Schema.optionalKey(Schema.String),
+  newContainerByDefault: Schema.optionalKey(Schema.Boolean),
 });
 type PersistedComposerThreadDraftState = typeof PersistedComposerThreadDraftState.Type;
 
@@ -340,6 +347,14 @@ export interface ComposerThreadDraftState {
   modelSelectionExplicit?: boolean;
   runtimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode | null;
+  /** A new container selected in the composer but not configured until send. */
+  pendingContainerId: AgentContainerId | null;
+  /** Image used when the pending container is materialized. */
+  containerImageId: AgentContainerImageId;
+  /** Network policy used when the pending container is materialized. */
+  containerNetworkPolicy: string;
+  /** Carries the New container choice into subsequently-created drafts. */
+  newContainerByDefault: boolean;
 }
 
 /**
@@ -497,6 +512,18 @@ interface ComposerDraftStoreState {
   finalizePromotedDraftThread: (threadRef: ComposerThreadTarget) => void;
   clearDraftThread: (threadRef: ComposerThreadTarget) => void;
   setStickyModelSelection: (modelSelection: ModelSelection | null | undefined) => void;
+  setContainerComposerState: (
+    threadRef: ComposerThreadTarget,
+    state: Partial<
+      Pick<
+        ComposerThreadDraftState,
+        | "pendingContainerId"
+        | "containerImageId"
+        | "containerNetworkPolicy"
+        | "newContainerByDefault"
+      >
+    >,
+  ) => void;
   setPrompt: (threadRef: ComposerThreadTarget, prompt: string) => void;
   setTerminalContexts: (threadRef: ComposerThreadTarget, contexts: TerminalContextDraft[]) => void;
   setModelSelection: (
@@ -720,6 +747,10 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   activeProvider: null,
   runtimeMode: null,
   interactionMode: null,
+  pendingContainerId: null,
+  containerImageId: DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+  containerNetworkPolicy: "",
+  newContainerByDefault: false,
 });
 
 /**
@@ -743,6 +774,10 @@ export function createEmptyThreadDraft(): ComposerThreadDraftState {
     activeProvider: null,
     runtimeMode: null,
     interactionMode: null,
+    pendingContainerId: null,
+    containerImageId: DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+    containerNetworkPolicy: "",
+    newContainerByDefault: false,
   };
 }
 
@@ -816,7 +851,11 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
     draft.runtimeMode === null &&
-    draft.interactionMode === null
+    draft.interactionMode === null &&
+    draft.pendingContainerId === null &&
+    draft.containerImageId === DEFAULT_AGENT_CONTAINER_IMAGE_ID &&
+    draft.containerNetworkPolicy === "" &&
+    !draft.newContainerByDefault
   );
 }
 
@@ -2022,7 +2061,11 @@ function partializeComposerDraftStoreState(
       draft.reviewComments.length === 0 &&
       !hasModelData &&
       draft.runtimeMode === null &&
-      draft.interactionMode === null
+      draft.interactionMode === null &&
+      draft.pendingContainerId === null &&
+      draft.containerImageId === DEFAULT_AGENT_CONTAINER_IMAGE_ID &&
+      draft.containerNetworkPolicy === "" &&
+      !draft.newContainerByDefault
     ) {
       continue;
     }
@@ -2101,6 +2144,14 @@ function partializeComposerDraftStoreState(
         : {}),
       ...(draft.runtimeMode ? { runtimeMode: draft.runtimeMode } : {}),
       ...(draft.interactionMode ? { interactionMode: draft.interactionMode } : {}),
+      ...(draft.pendingContainerId ? { pendingContainerId: draft.pendingContainerId } : {}),
+      ...(draft.containerImageId !== DEFAULT_AGENT_CONTAINER_IMAGE_ID
+        ? { containerImageId: draft.containerImageId }
+        : {}),
+      ...(draft.containerNetworkPolicy
+        ? { containerNetworkPolicy: draft.containerNetworkPolicy }
+        : {}),
+      ...(draft.newContainerByDefault ? { newContainerByDefault: true } : {}),
     };
     persistedDraftsByThreadKey[threadKey] = persistedDraft;
   }
@@ -2363,6 +2414,10 @@ function toHydratedThreadDraft(
     ...(persistedDraft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
+    pendingContainerId: persistedDraft.pendingContainerId ?? null,
+    containerImageId: persistedDraft.containerImageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+    containerNetworkPolicy: persistedDraft.containerNetworkPolicy ?? "",
+    newContainerByDefault: persistedDraft.newContainerByDefault ?? false,
   };
 }
 
@@ -2565,6 +2620,34 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             draftId,
             options,
           );
+        },
+        setContainerComposerState: (threadRef, nextState) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) {
+            return;
+          }
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            const nextDraft: ComposerThreadDraftState = {
+              ...existing,
+              ...nextState,
+            };
+            if (
+              existing.pendingContainerId === nextDraft.pendingContainerId &&
+              existing.containerImageId === nextDraft.containerImageId &&
+              existing.containerNetworkPolicy === nextDraft.containerNetworkPolicy &&
+              existing.newContainerByDefault === nextDraft.newContainerByDefault
+            ) {
+              return state;
+            }
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
         },
         setDraftThreadContext: (threadRef, options) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";

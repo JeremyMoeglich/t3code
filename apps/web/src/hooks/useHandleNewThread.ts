@@ -4,7 +4,13 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { DEFAULT_RUNTIME_MODE, type ScopedProjectRef, type ThreadId } from "@t3tools/contracts";
+import {
+  AgentContainerId,
+  DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+  DEFAULT_RUNTIME_MODE,
+  type ScopedProjectRef,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import {
@@ -15,7 +21,7 @@ import {
   type DraftThreadState,
   useComposerDraftStore,
 } from "../composerDraftStore";
-import { newDraftId, newThreadId } from "../lib/utils";
+import { newDraftId, newThreadId, randomUUID } from "../lib/utils";
 import { orderItemsByPreferredIds } from "../components/Sidebar.logic";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -99,6 +105,7 @@ export function useNewThreadHandler() {
         applyStickyState,
         moveComposerPromptAndImages,
         setDraftThreadContext,
+        setContainerComposerState,
         setLogicalProjectDraftThreadId,
         setModelSelection,
       } = useComposerDraftStore.getState();
@@ -138,6 +145,20 @@ export function useNewThreadHandler() {
         carrySourceShell?.interactionMode ??
         carrySourceDraft?.interactionMode ??
         null;
+      const carryContainerImageId =
+        carrySourceComposer?.containerImageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID;
+      const carryContainerNetworkPolicy = carrySourceComposer?.containerNetworkPolicy ?? "";
+      const carryNewContainerByDefault = carrySourceComposer?.newContainerByDefault === true;
+      const applyContainerDefaults = (destinationDraftId: DraftId) => {
+        setContainerComposerState(destinationDraftId, {
+          pendingContainerId: carryNewContainerByDefault
+            ? AgentContainerId.make(randomUUID())
+            : null,
+          containerImageId: carryContainerImageId,
+          containerNetworkPolicy: carryContainerNetworkPolicy,
+          newContainerByDefault: carryNewContainerByDefault,
+        });
+      };
       // Content only moves when the caller opted in and the user is looking
       // at a draft. The content check happens at move time, not here: the
       // paths below await, and text typed during those awaits must still
@@ -328,6 +349,9 @@ export function useNewThreadHandler() {
               });
             }
           }
+          if (!isDraftAlreadyOpen) {
+            applyContainerDefaults(emptyStoredDraftThread.draftId);
+          }
           // The workspace context must also ride along here: when projectRef
           // targets a different physical member of the logical project,
           // createDraftThreadState treats the remap as a project change and
@@ -455,6 +479,7 @@ export function useNewThreadHandler() {
           ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
         });
         applyStickyState(draftId);
+        applyContainerDefaults(draftId);
         const modelSelectionOverride = resolveModelSelectionOverride(draftId);
         if (modelSelectionOverride) {
           // Project defaults and carried selections both outrank global sticky

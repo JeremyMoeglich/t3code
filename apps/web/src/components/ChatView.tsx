@@ -1,5 +1,8 @@
 import {
   type ApprovalRequestId,
+  AgentContainerId,
+  type AgentContainerImageId,
+  DEFAULT_AGENT_CONTAINER_IMAGE_ID,
   type ChatFileAttachment,
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
@@ -177,6 +180,7 @@ import {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
+import type { ComposerExecutionTarget } from "./BranchToolbarExecutionTargetSelector";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import {
@@ -188,7 +192,7 @@ import {
   PaperclipIcon,
   WifiOffIcon,
 } from "lucide-react";
-import { cn, randomHex } from "~/lib/utils";
+import { cn, randomHex, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
@@ -259,6 +263,7 @@ import { environmentCatalog } from "../connection/catalog";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { projectEnvironment } from "../state/projects";
+import { agentContainerEnvironment } from "../state/agentContainers";
 import { useEnvironmentQuery } from "../state/query";
 import {
   environmentServerConfigsAtom,
@@ -1303,6 +1308,9 @@ function ChatViewContent(props: ChatViewProps) {
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const configureAgentContainer = useAtomCommand(agentContainerEnvironment.configure, {
+    reportFailure: false,
+  });
   const switchGitRef = useAtomCommand(vcsEnvironment.switchRef, { reportFailure: false });
   const setThreadRuntimeMode = useAtomCommand(threadEnvironment.setRuntimeMode, {
     reportFailure: false,
@@ -1393,6 +1401,17 @@ function ChatViewContent(props: ChatViewProps) {
   const composerInteractionMode = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.interactionMode ?? null,
   );
+  const pendingContainerId = useComposerDraftStore(
+    (store) => store.getComposerDraft(composerDraftTarget)?.pendingContainerId ?? null,
+  );
+  const containerImageId = useComposerDraftStore(
+    (store) =>
+      store.getComposerDraft(composerDraftTarget)?.containerImageId ??
+      DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+  );
+  const containerNetworkPolicy = useComposerDraftStore(
+    (store) => store.getComposerDraft(composerDraftTarget)?.containerNetworkPolicy ?? "",
+  );
   const composerActiveProvider = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
   );
@@ -1420,6 +1439,9 @@ function ChatViewContent(props: ChatViewProps) {
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
   const setComposerDraftInteractionMode = useComposerDraftStore(
     (store) => store.setInteractionMode,
+  );
+  const setContainerComposerState = useComposerDraftStore(
+    (store) => store.setContainerComposerState,
   );
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
@@ -2997,12 +3019,25 @@ function ChatViewContent(props: ChatViewProps) {
     activeThread?.session?.status === "starting" ||
     activeThread?.session?.status === "running",
   );
-  const executionTarget = activeThread?.executionTarget ?? { kind: "host" };
+  const executionTarget: ComposerExecutionTarget = pendingContainerId
+    ? { kind: "new-container" }
+    : (activeThread?.executionTarget ?? { kind: "host" });
   const showExecutionTarget = activeProviderStatus?.supportsAgentContainers === true;
   const executionTargetLocked = workspaceLocked;
   const onExecutionTargetChange = useCallback(
-    (target: ThreadExecutionTarget) => {
+    (target: ComposerExecutionTarget) => {
       if (!activeThread || executionTargetLocked) return;
+      if (target.kind === "new-container") {
+        setContainerComposerState(composerDraftTarget, {
+          pendingContainerId: pendingContainerId ?? AgentContainerId.make(randomUUID()),
+          newContainerByDefault: true,
+        });
+        return;
+      }
+      setContainerComposerState(composerDraftTarget, {
+        pendingContainerId: null,
+        newContainerByDefault: false,
+      });
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { executionTarget: target });
         return;
@@ -3025,9 +3060,27 @@ function ChatViewContent(props: ChatViewProps) {
       composerDraftTarget,
       executionTargetLocked,
       isLocalDraftThread,
+      pendingContainerId,
+      setContainerComposerState,
       setDraftThreadContext,
       updateThreadMetadata,
     ],
+  );
+  const onContainerImageChange = useCallback(
+    (imageId: AgentContainerImageId) => {
+      if (executionTargetLocked) return;
+      setContainerComposerState(composerDraftTarget, {
+        containerImageId: imageId,
+      });
+    },
+    [composerDraftTarget, executionTargetLocked, setContainerComposerState],
+  );
+  const onNewContainerNetworkPolicyChange = useCallback(
+    (networkPolicy: string) => {
+      if (executionTargetLocked) return;
+      setContainerComposerState(composerDraftTarget, { containerNetworkPolicy: networkPolicy });
+    },
+    [composerDraftTarget, executionTargetLocked, setContainerComposerState],
   );
 
   // Handle environment change for draft threads.  When the user picks a
@@ -6006,6 +6059,14 @@ function ChatViewContent(props: ChatViewProps) {
       ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
       ctxSelectedModelSelection.options,
     );
+    const pendingContainerTargetId =
+      executionTarget.kind === "new-container"
+        ? (pendingContainerId ?? AgentContainerId.make(randomUUID()))
+        : null;
+    const resolvedExecutionTarget: ThreadExecutionTarget =
+      executionTarget.kind === "new-container"
+        ? { kind: "container", containerId: pendingContainerTargetId! }
+        : executionTarget;
 
     let failure: AtomCommandResult<unknown, unknown> | null = null;
     // Auto-title from first message
@@ -6019,6 +6080,32 @@ function ChatViewContent(props: ChatViewProps) {
       });
       if (titleResult._tag === "Failure") {
         failure = titleResult;
+      }
+    }
+
+    if (failure === null && executionTarget.kind === "new-container") {
+      const configureResult = await configureAgentContainer({
+        environmentId,
+        input: {
+          id: pendingContainerTargetId!,
+          workspacePath: activeProject.workspaceRoot,
+          networkPolicy: containerNetworkPolicy,
+          imageId: containerImageId,
+        },
+      });
+      if (configureResult._tag === "Failure") {
+        failure = configureResult;
+      } else if (isServerThread) {
+        const targetResult = await updateThreadMetadata({
+          environmentId,
+          input: {
+            threadId: threadIdForSend,
+            executionTarget: resolvedExecutionTarget,
+          },
+        });
+        if (targetResult._tag === "Failure") {
+          failure = targetResult;
+        }
       }
     }
 
@@ -6065,7 +6152,7 @@ function ChatViewContent(props: ChatViewProps) {
                       interactionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
-                      executionTarget,
+                      executionTarget: resolvedExecutionTarget,
                       createdAt: activeThread.createdAt,
                     },
                   }
@@ -6116,6 +6203,19 @@ function ChatViewContent(props: ChatViewProps) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        if (executionTarget.kind === "new-container") {
+          setContainerComposerState(composerDraftTarget, {
+            pendingContainerId: null,
+          });
+        }
+        if (isLocalDraftThread) {
+          setContainerComposerState(scopeThreadRef(activeThread.environmentId, threadIdForSend), {
+            pendingContainerId: null,
+            containerImageId,
+            containerNetworkPolicy,
+            newContainerByDefault: executionTarget.kind === "new-container",
+          });
+        }
         if (turnUsesAttachmentUploads) {
           releaseDraftAttachments(composerAttachmentsSnapshot);
         }
@@ -6621,23 +6721,49 @@ function ChatViewContent(props: ChatViewProps) {
       resetLocalDispatch();
     };
 
-    const createResult = await createThread({
-      environmentId,
-      input: {
-        threadId: nextThreadId,
-        projectId: activeProject.id,
-        title: nextThreadTitle,
-        modelSelection: nextThreadModelSelection,
-        runtimeMode,
-        interactionMode: "default",
-        branch: activeThreadBranch,
-        worktreePath: activeThread.worktreePath,
-        executionTarget,
-        createdAt,
-      },
-    });
-    let failure: AtomCommandResult<unknown, unknown> | null =
-      createResult._tag === "Failure" ? createResult : null;
+    const pendingPlanContainerId =
+      executionTarget.kind === "new-container"
+        ? (pendingContainerId ?? AgentContainerId.make(randomUUID()))
+        : null;
+    const planExecutionTarget: ThreadExecutionTarget =
+      executionTarget.kind === "new-container"
+        ? { kind: "container", containerId: pendingPlanContainerId! }
+        : executionTarget;
+    let failure: AtomCommandResult<unknown, unknown> | null = null;
+
+    if (pendingPlanContainerId) {
+      const configureResult = await configureAgentContainer({
+        environmentId,
+        input: {
+          id: pendingPlanContainerId,
+          workspacePath: activeProject.workspaceRoot,
+          networkPolicy: containerNetworkPolicy,
+          imageId: containerImageId,
+        },
+      });
+      if (configureResult._tag === "Failure") {
+        failure = configureResult;
+      }
+    }
+
+    if (failure === null) {
+      const createResult = await createThread({
+        environmentId,
+        input: {
+          threadId: nextThreadId,
+          projectId: activeProject.id,
+          title: nextThreadTitle,
+          modelSelection: nextThreadModelSelection,
+          runtimeMode,
+          interactionMode: "default",
+          branch: activeThreadBranch,
+          worktreePath: activeThread.worktreePath,
+          executionTarget: planExecutionTarget,
+          createdAt,
+        },
+      });
+      failure = createResult._tag === "Failure" ? createResult : null;
+    }
 
     if (failure === null) {
       const startResult = await startThreadTurn({
@@ -6662,6 +6788,15 @@ function ChatViewContent(props: ChatViewProps) {
         },
       });
       failure = startResult._tag === "Failure" ? startResult : null;
+      if (failure === null && pendingPlanContainerId) {
+        setContainerComposerState(composerDraftTarget, { pendingContainerId: null });
+        setContainerComposerState(scopeThreadRef(activeThread.environmentId, nextThreadId), {
+          pendingContainerId: null,
+          containerImageId,
+          containerNetworkPolicy,
+          newContainerByDefault: true,
+        });
+      }
     }
 
     if (failure === null) {
@@ -7404,8 +7539,14 @@ function ChatViewContent(props: ChatViewProps) {
                                 workspaceLocked={workspaceLocked}
                                 showExecutionTarget={showExecutionTarget}
                                 executionTarget={executionTarget}
+                                containerImageId={containerImageId}
                                 executionTargetLocked={executionTargetLocked}
                                 onExecutionTargetChange={onExecutionTargetChange}
+                                newContainerNetworkPolicy={containerNetworkPolicy}
+                                onNewContainerNetworkPolicyChange={
+                                  onNewContainerNetworkPolicyChange
+                                }
+                                onContainerImageChange={onContainerImageChange}
                                 onComposerFocusRequest={scheduleComposerFocus}
                                 {...(canCheckoutPullRequestIntoThread
                                   ? { onCheckoutPullRequestRequest: openPullRequestDialog }

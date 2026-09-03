@@ -1,6 +1,5 @@
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
-  AgentContainerImageId,
   AgentContainerSummary,
   EnvironmentId,
   ThreadExecutionTarget,
@@ -12,7 +11,6 @@ import { memo, useMemo, useState } from "react";
 import { agentContainerEnvironment } from "../state/agentContainers";
 import { useEnvironmentQuery } from "../state/query";
 import { useAtomCommand } from "../state/use-atom-command";
-import { randomUUID } from "../lib/utils";
 import { AgentContainerNetworkDialog } from "./AgentContainerNetworkDialog";
 import {
   Select,
@@ -27,19 +25,22 @@ import {
 interface BranchToolbarExecutionTargetSelectorProps {
   environmentId: EnvironmentId;
   workspacePath: string | null;
-  value: ThreadExecutionTarget;
+  value: ComposerExecutionTarget;
   locked: boolean;
-  onChange: (value: ThreadExecutionTarget) => void;
+  onChange: (value: ComposerExecutionTarget) => void;
+  newContainerNetworkPolicy: string;
+  onNewContainerNetworkPolicyChange: (networkPolicy: string) => void;
 }
+
+export type ComposerExecutionTarget = ThreadExecutionTarget | { readonly kind: "new-container" };
 
 const HOST_VALUE = "host";
 const NEW_VALUE = "new";
 const NETWORK_VALUE = "network";
 const containerValue = (id: AgentContainerId) => `container:${id}`;
-
 type NetworkDialog =
-  | { readonly kind: "create"; readonly id: AgentContainerId }
-  | { readonly kind: "edit"; readonly container: AgentContainerSummary };
+  | { readonly kind: "new-container" }
+  | { readonly kind: "existing"; readonly container: AgentContainerSummary };
 
 export const BranchToolbarExecutionTargetSelector = memo(
   function BranchToolbarExecutionTargetSelector({
@@ -48,6 +49,8 @@ export const BranchToolbarExecutionTargetSelector = memo(
     value,
     locked,
     onChange,
+    newContainerNetworkPolicy,
+    onNewContainerNetworkPolicyChange,
   }: BranchToolbarExecutionTargetSelectorProps) {
     const [networkDialog, setNetworkDialog] = useState<NetworkDialog | null>(null);
     const configure = useAtomCommand(agentContainerEnvironment.configure, {
@@ -58,13 +61,6 @@ export const BranchToolbarExecutionTargetSelector = memo(
       [environmentId],
     );
     const query = useEnvironmentQuery(queryAtom);
-    const images = query.data?.images ?? [
-      {
-        id: DEFAULT_AGENT_CONTAINER_IMAGE_ID,
-        name: "T3 default",
-        source: "builtin" as const,
-      },
-    ];
     const compatible = useMemo(
       () =>
         workspacePath
@@ -78,7 +74,12 @@ export const BranchToolbarExecutionTargetSelector = memo(
       value.kind === "container"
         ? (compatible.find((container) => container.id === value.containerId) ?? null)
         : null;
-    const selectedValue = value.kind === "host" ? HOST_VALUE : containerValue(value.containerId);
+    const selectedValue =
+      value.kind === "host"
+        ? HOST_VALUE
+        : value.kind === "new-container"
+          ? NEW_VALUE
+          : containerValue(value.containerId);
     const pendingContainer =
       value.kind === "container" && selectedContainer === null
         ? {
@@ -90,7 +91,9 @@ export const BranchToolbarExecutionTargetSelector = memo(
     const items = [
       { value: HOST_VALUE, label: "Host" },
       { value: NEW_VALUE, label: "New container" },
-      ...(selectedContainer ? [{ value: NETWORK_VALUE, label: "Network policy" }] : []),
+      ...(selectedContainer || value.kind === "new-container"
+        ? [{ value: NETWORK_VALUE, label: "Network policy" }]
+        : []),
       ...compatible.map((container) => ({
         value: containerValue(container.id),
         label: container.name,
@@ -106,11 +109,11 @@ export const BranchToolbarExecutionTargetSelector = memo(
           items={items}
           onValueChange={(next: string | null) => {
             if (next === NETWORK_VALUE) {
-              if (selectedContainer)
-                setNetworkDialog({
-                  kind: "edit",
-                  container: selectedContainer,
-                });
+              if (value.kind === "new-container") {
+                setNetworkDialog({ kind: "new-container" });
+              } else if (selectedContainer) {
+                setNetworkDialog({ kind: "existing", container: selectedContainer });
+              }
               return;
             }
             if (locked) return;
@@ -119,12 +122,7 @@ export const BranchToolbarExecutionTargetSelector = memo(
               return;
             }
             if (next === NEW_VALUE) {
-              if (workspacePath) {
-                setNetworkDialog({
-                  kind: "create",
-                  id: AgentContainerId.make(randomUUID()),
-                });
-              }
+              if (workspacePath) onChange({ kind: "new-container" });
               return;
             }
             onChange({
@@ -167,8 +165,11 @@ export const BranchToolbarExecutionTargetSelector = memo(
                   <PlusIcon className="size-3" /> New container
                 </span>
               </SelectItem>
-              {selectedContainer ? (
-                <SelectItem value={NETWORK_VALUE}>
+              {selectedContainer || value.kind === "new-container" ? (
+                <SelectItem
+                  value={NETWORK_VALUE}
+                  disabled={locked && value.kind === "new-container"}
+                >
                   <span className="inline-flex items-center gap-1.5">
                     <ShieldIcon className="size-3" /> Network policy…
                   </span>
@@ -204,32 +205,33 @@ export const BranchToolbarExecutionTargetSelector = memo(
         </Select>
         <AgentContainerNetworkDialog
           open={networkDialog !== null}
-          creating={networkDialog?.kind === "create"}
           initialPolicy={
-            networkDialog?.kind === "edit" ? networkDialog.container.networkPolicy : ""
+            networkDialog?.kind === "existing"
+              ? networkDialog.container.networkPolicy
+              : newContainerNetworkPolicy
           }
-          images={images}
-          {...(networkDialog?.kind === "edit" && networkDialog.container.imageId
-            ? { initialImageId: networkDialog.container.imageId }
-            : {})}
-          {...(query.data?.imagesDirectory ? { imagesDirectory: query.data.imagesDirectory } : {})}
           onOpenChange={(open) => !open && setNetworkDialog(null)}
-          onSave={async (networkPolicy, imageId: AgentContainerImageId) => {
-            if (!networkDialog || !workspacePath) return "A workspace is required.";
-            const id =
-              networkDialog.kind === "create" ? networkDialog.id : networkDialog.container.id;
+          onSave={async (networkPolicy) => {
+            if (!networkDialog) return null;
+            if (networkDialog.kind === "new-container") {
+              onNewContainerNetworkPolicyChange(networkPolicy);
+              return null;
+            }
+            if (!workspacePath) return "A workspace is required.";
             const result = await configure({
               environmentId,
-              input: { id, workspacePath, networkPolicy, imageId },
+              input: {
+                id: networkDialog.container.id,
+                workspacePath,
+                networkPolicy,
+                imageId: networkDialog.container.imageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+              },
             });
             if (result._tag === "Failure") {
               const cause = squashAtomCommandFailure(result);
               return cause instanceof Error ? cause.message : String(cause);
             }
             query.refresh();
-            if (networkDialog.kind === "create") {
-              onChange({ kind: "container", containerId: id });
-            }
             return null;
           }}
         />

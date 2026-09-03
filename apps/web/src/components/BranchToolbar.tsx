@@ -1,5 +1,5 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ThreadExecutionTarget, ThreadId } from "@t3tools/contracts";
+import type { AgentContainerImageId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
   CloudIcon,
@@ -29,6 +29,8 @@ import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
 import { BranchToolbarExecutionTargetSelector } from "./BranchToolbarExecutionTargetSelector";
+import type { ComposerExecutionTarget } from "./BranchToolbarExecutionTargetSelector";
+import { BranchToolbarContainerImageSelector } from "./BranchToolbarContainerImageSelector";
 import { Button } from "./ui/button";
 import {
   Menu,
@@ -60,9 +62,13 @@ interface BranchToolbarProps {
   availableEnvironments?: readonly EnvironmentOption[];
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
   showExecutionTarget: boolean;
-  executionTarget: ThreadExecutionTarget;
+  executionTarget: ComposerExecutionTarget;
+  containerImageId: AgentContainerImageId;
   executionTargetLocked: boolean;
-  onExecutionTargetChange: (target: ThreadExecutionTarget) => void;
+  onExecutionTargetChange: (target: ComposerExecutionTarget) => void;
+  newContainerNetworkPolicy: string;
+  onNewContainerNetworkPolicyChange: (networkPolicy: string) => void;
+  onContainerImageChange: (imageId: AgentContainerImageId) => void;
 }
 
 interface MobileRunContextSelectorProps {
@@ -398,8 +404,12 @@ export const BranchToolbar = memo(function BranchToolbar({
   onEnvironmentChange,
   showExecutionTarget,
   executionTarget,
+  containerImageId,
   executionTargetLocked,
   onExecutionTargetChange,
+  newContainerNetworkPolicy,
+  onNewContainerNetworkPolicyChange,
+  onContainerImageChange,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -529,13 +539,23 @@ export const BranchToolbar = memo(function BranchToolbar({
       )}
 
       {showExecutionTarget ? (
-        <BranchToolbarExecutionTargetSelector
-          environmentId={environmentId}
-          workspacePath={activeProject.workspaceRoot}
-          value={executionTarget}
-          locked={executionTargetLocked}
-          onChange={onExecutionTargetChange}
-        />
+        <>
+          <BranchToolbarContainerImageSelector
+            environmentId={environmentId}
+            value={containerImageId}
+            locked={executionTargetLocked}
+            onChange={onContainerImageChange}
+          />
+          <BranchToolbarExecutionTargetSelector
+            environmentId={environmentId}
+            workspacePath={activeProject.workspaceRoot}
+            value={executionTarget}
+            locked={executionTargetLocked}
+            onChange={onExecutionTargetChange}
+            newContainerNetworkPolicy={newContainerNetworkPolicy}
+            onNewContainerNetworkPolicyChange={onNewContainerNetworkPolicyChange}
+          />
+        </>
       ) : null}
 
       {showGitControls ? (
