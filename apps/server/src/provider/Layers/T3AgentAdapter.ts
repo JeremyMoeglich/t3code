@@ -69,6 +69,7 @@ import {
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
 
 const PROVIDER = ProviderDriverKind.make("t3Agent");
+const HARNESS_RUNTIME_MODE = "full-access" satisfies RuntimeMode;
 const SYSTEM_PROMPT = `You are a coding agent running inside T3 Code.
 Work directly in the current working directory. Inspect before changing files, keep edits focused,
 and verify the result. Read, bash, edit, and write operate in the selected execution environment.`;
@@ -674,7 +675,7 @@ export const makeT3AgentAdapter = Effect.fn("makeT3AgentAdapter")(function* (
         provider: PROVIDER,
         providerInstanceId: options.instanceId,
         status: "ready",
-        runtimeMode: input.runtimeMode,
+        runtimeMode: HARNESS_RUNTIME_MODE,
         cwd,
         ...(input.executionTarget ? { executionTarget: input.executionTarget } : {}),
         model: model.id,

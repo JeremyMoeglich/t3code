@@ -15,7 +15,6 @@ import {
 } from "@earendil-works/pi-ai";
 import {
   AgentContainerId,
-  ApprovalRequestId,
   ProviderInstanceId,
   ThreadId,
   type ProviderRuntimeEvent,
@@ -159,7 +158,7 @@ it.effect("runs an Agent turn, persists it, restores it, and rolls it back", () 
   }),
 );
 
-it.effect("executes a host bash tool only after T3 approval", () =>
+it.effect("runs host tools without runtime approval modes", () =>
   Effect.gen(function* () {
     const root = yield* Effect.promise(() =>
       NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-agent-approval-")),
@@ -182,15 +181,11 @@ it.effect("executes a host bash tool only after T3 approval", () =>
       models,
     });
     const threadId = ThreadId.make("t3-agent-approval-thread");
-    const approval = yield* Deferred.make<ProviderRuntimeEvent>();
     const completed = yield* Deferred.make<void>();
     const events: ProviderRuntimeEvent[] = [];
     const eventFiber = yield* adapter.streamEvents.pipe(
       Stream.runForEach((event) =>
         Effect.sync(() => events.push(event)).pipe(
-          Effect.andThen(
-            event.type === "request.opened" ? Deferred.succeed(approval, event) : Effect.void,
-          ),
           Effect.andThen(
             event.type === "turn.completed" ? Deferred.succeed(completed, undefined) : Effect.void,
           ),
@@ -198,13 +193,11 @@ it.effect("executes a host bash tool only after T3 approval", () =>
       ),
       Effect.forkChild,
     );
-    yield* adapter.startSession(startInput(threadId, root, "approval-required"));
+    const session = yield* adapter.startSession(startInput(threadId, root, "approval-required"));
+    assert.equal(session.runtimeMode, "full-access");
     yield* adapter.sendTurn({ threadId, input: "run it" });
-    const request = yield* Deferred.await(approval).pipe(Effect.timeout("2 seconds"));
-    assert.equal(request.type, "request.opened");
-    if (request.type !== "request.opened" || !request.requestId) return;
-    yield* adapter.respondToRequest(threadId, ApprovalRequestId.make(request.requestId), "accept");
     yield* Deferred.await(completed).pipe(Effect.timeout("2 seconds"));
+    assert.isFalse(events.some((event) => event.type === "request.opened"));
     const bashCompletion = events.find(
       (event) => event.type === "item.completed" && event.payload.itemType === "command_execution",
     );
