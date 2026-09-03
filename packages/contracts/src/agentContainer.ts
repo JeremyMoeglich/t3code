@@ -9,12 +9,11 @@ export const AgentContainerImageId = TrimmedNonEmptyString.pipe(
   Schema.brand("AgentContainerImageId"),
 );
 export type AgentContainerImageId = typeof AgentContainerImageId.Type;
-export const DEFAULT_AGENT_CONTAINER_IMAGE_ID = AgentContainerImageId.make("t3-default");
 
 export const AgentContainerImageDefinition = Schema.Struct({
   id: AgentContainerImageId,
   name: TrimmedNonEmptyString,
-  source: Schema.Literals(["builtin", "folder"]),
+  source: Schema.Literal("folder"),
 });
 export type AgentContainerImageDefinition = typeof AgentContainerImageDefinition.Type;
 
@@ -47,7 +46,7 @@ export const AgentContainerListResult = Schema.Struct({
   unavailableReason: Schema.optional(TrimmedNonEmptyString),
   containers: Schema.Array(AgentContainerSummary),
   imagesDirectory: Schema.optional(TrimmedNonEmptyString),
-  images: Schema.optional(Schema.Array(AgentContainerImageDefinition)),
+  images: Schema.Array(AgentContainerImageDefinition),
 });
 export type AgentContainerListResult = typeof AgentContainerListResult.Type;
 
@@ -55,7 +54,7 @@ export const AgentContainerConfigureInput = Schema.Struct({
   id: AgentContainerId,
   workspacePath: TrimmedNonEmptyString,
   networkPolicy: Schema.String,
-  imageId: Schema.optional(AgentContainerImageId),
+  imageId: AgentContainerImageId,
 });
 export type AgentContainerConfigureInput = typeof AgentContainerConfigureInput.Type;
 

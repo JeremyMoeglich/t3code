@@ -1,11 +1,7 @@
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import {
-  AgentContainerImageId,
-  DEFAULT_AGENT_CONTAINER_IMAGE_ID,
-  type EnvironmentId,
-} from "@t3tools/contracts";
+import { AgentContainerImageId, type EnvironmentId } from "@t3tools/contracts";
 import { FolderOpenIcon, PackageIcon } from "lucide-react";
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo } from "react";
 
 import { agentContainerEnvironment } from "../state/agentContainers";
 import { useEnvironmentQuery } from "../state/query";
@@ -27,9 +23,9 @@ const OPEN_FOLDER_VALUE = "__open-folder__";
 
 interface BranchToolbarContainerImageSelectorProps {
   environmentId: EnvironmentId;
-  value: AgentContainerImageId;
+  value: AgentContainerImageId | null;
   locked: boolean;
-  onChange: (value: AgentContainerImageId) => void;
+  onChange: (value: AgentContainerImageId | null) => void;
 }
 
 export const BranchToolbarContainerImageSelector = memo(
@@ -47,23 +43,20 @@ export const BranchToolbarContainerImageSelector = memo(
     const openInEditor = useAtomCommand(shellEnvironment.openInEditor, {
       reportFailure: false,
     });
-    const images = query.data?.images ?? [
-      {
-        id: DEFAULT_AGENT_CONTAINER_IMAGE_ID,
-        name: "T3 default",
-        source: "builtin" as const,
-      },
-    ];
+    const images = query.data?.images ?? [];
     const selectedImage = images.find((image) => image.id === value);
     const items = [
       ...images.map((image) => ({ value: image.id, label: image.name })),
       { value: OPEN_FOLDER_VALUE, label: "Open image folder" },
     ];
+    useEffect(() => {
+      if (query.data && value && !selectedImage && !locked) onChange(null);
+    }, [locked, onChange, query.data, selectedImage, value]);
 
     return (
       <Select
         modal={false}
-        value={selectedImage?.id ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID}
+        value={selectedImage?.id ?? null}
         items={items}
         onValueChange={(next) => {
           if (!next) return;
@@ -100,7 +93,7 @@ export const BranchToolbarContainerImageSelector = memo(
             className="min-w-0 max-w-[160px] group-data-[compact]/composer-context:max-w-0"
           >
             <span className="block truncate group-data-[compact]/composer-context:opacity-0">
-              <SelectValue />
+              <SelectValue placeholder={query.data ? "Choose image" : "Loading images…"} />
             </span>
           </span>
         </SelectTrigger>
@@ -115,6 +108,9 @@ export const BranchToolbarContainerImageSelector = memo(
                 </span>
               </SelectItem>
             ))}
+            {query.data && images.length === 0 ? (
+              <p className="px-2 py-1.5 text-xs text-muted-foreground">No Containerfiles found.</p>
+            ) : null}
           </SelectGroup>
           <SelectSeparator />
           <SelectItem value={OPEN_FOLDER_VALUE} disabled={!query.data?.imagesDirectory}>

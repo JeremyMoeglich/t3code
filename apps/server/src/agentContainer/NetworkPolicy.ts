@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { isIP } from "node:net";
+import * as NodeNet from "node:net";
 
 export type NetworkAction = "allow" | "deny";
 export type NetworkProtocol = "tcp" | "udp" | "icmp";
@@ -112,7 +112,7 @@ function parseTarget(value: string): IpTarget {
   const slash = value.indexOf("/");
   if (slash !== -1 && slash !== value.lastIndexOf("/")) throw new Error("invalid CIDR");
   const address = slash === -1 ? value : value.slice(0, slash);
-  const family = isIP(address);
+  const family = NodeNet.isIP(address);
   if (family !== 4 && family !== 6) throw new Error("expected an IP address, CIDR, or dns");
   const bits = family === 4 ? 32 : 128;
   const prefixText = slash === -1 ? String(bits) : value.slice(slash + 1);

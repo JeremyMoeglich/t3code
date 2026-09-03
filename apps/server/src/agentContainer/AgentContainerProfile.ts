@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
@@ -15,7 +15,6 @@ const ResourceInput = Schema.Struct({
 });
 
 const ProfileInput = Schema.Struct({
-  image: Schema.optional(Schema.String),
   resources: Schema.optional(Schema.Array(ResourceInput)),
   environment: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
@@ -34,7 +33,6 @@ export interface AgentContainerResource extends ResourceDefinition {
 }
 
 export interface AgentContainerProfile {
-  readonly image: string;
   readonly resources: ReadonlyArray<AgentContainerResource>;
   readonly environment: Readonly<Record<string, string>>;
   readonly fingerprint: string;
@@ -173,7 +171,6 @@ export async function resolveAgentContainerProfile(input: {
   readonly stateDir: string;
   readonly projectPath: string;
   readonly projectResourceRoot: string;
-  readonly defaultImage: string;
 }): Promise<AgentContainerProfile> {
   const globalPath = NodePath.join(input.stateDir, "agent-container-profile.json");
   const projectPath = NodePath.join(input.projectPath, ".t3code", "container.json");
@@ -202,13 +199,8 @@ export async function resolveAgentContainerProfile(input: {
       throw new Error(`Agent container profile has invalid environment key '${key}'.`);
     }
   }
-  const image =
-    [...profiles]
-      .reverse()
-      .find(({ profile }) => profile?.image?.trim())
-      ?.profile?.image?.trim() ?? input.defaultImage;
-  const fingerprint = createHash("sha256")
-    .update(JSON.stringify({ image, resources, environment }))
+  const fingerprint = NodeCrypto.createHash("sha256")
+    .update(JSON.stringify({ resources, environment }))
     .digest("hex");
-  return { image, resources, environment, fingerprint };
+  return { resources, environment, fingerprint };
 }

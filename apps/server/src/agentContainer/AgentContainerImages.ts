@@ -3,11 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
-import {
-  AgentContainerImageId,
-  DEFAULT_AGENT_CONTAINER_IMAGE_ID,
-  type AgentContainerImageDefinition,
-} from "@t3tools/contracts";
+import { AgentContainerImageId, type AgentContainerImageDefinition } from "@t3tools/contracts";
 
 export interface AgentContainerImage extends AgentContainerImageDefinition {
   readonly contextPath?: string;
@@ -57,14 +53,7 @@ export async function listAgentContainerImages(
         }
       }),
   );
-  return [
-    {
-      id: DEFAULT_AGENT_CONTAINER_IMAGE_ID,
-      name: "T3 default",
-      source: "builtin",
-    },
-    ...folders
-      .filter((image): image is AgentContainerImage => image !== null)
-      .toSorted((left, right) => left.name.localeCompare(right.name)),
-  ];
+  return folders
+    .filter((image): image is AgentContainerImage => image !== null)
+    .toSorted((left, right) => left.name.localeCompare(right.name));
 }

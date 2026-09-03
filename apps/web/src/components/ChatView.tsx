@@ -2,7 +2,6 @@ import {
   type ApprovalRequestId,
   AgentContainerId,
   type AgentContainerImageId,
-  DEFAULT_AGENT_CONTAINER_IMAGE_ID,
   type ChatFileAttachment,
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
@@ -1405,9 +1404,7 @@ function ChatViewContent(props: ChatViewProps) {
     (store) => store.getComposerDraft(composerDraftTarget)?.pendingContainerId ?? null,
   );
   const containerImageId = useComposerDraftStore(
-    (store) =>
-      store.getComposerDraft(composerDraftTarget)?.containerImageId ??
-      DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+    (store) => store.getComposerDraft(composerDraftTarget)?.containerImageId ?? null,
   );
   const containerNetworkPolicy = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.containerNetworkPolicy ?? "",
@@ -3067,7 +3064,7 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
   const onContainerImageChange = useCallback(
-    (imageId: AgentContainerImageId) => {
+    (imageId: AgentContainerImageId | null) => {
       if (executionTargetLocked) return;
       setContainerComposerState(composerDraftTarget, {
         containerImageId: imageId,
@@ -5821,6 +5818,11 @@ function ChatViewContent(props: ChatViewProps) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
     }
+    const selectedContainerImageId = containerImageId;
+    if (executionTarget.kind === "new-container" && !selectedContainerImageId) {
+      setThreadError(threadIdForSend, "Choose a container image before sending.");
+      return;
+    }
 
     const composerImagesSnapshot = [...composerImages];
     const composerFilesSnapshot = [...composerFiles];
@@ -6090,7 +6092,7 @@ function ChatViewContent(props: ChatViewProps) {
           id: pendingContainerTargetId!,
           workspacePath: activeProject.workspaceRoot,
           networkPolicy: containerNetworkPolicy,
-          imageId: containerImageId,
+          imageId: selectedContainerImageId!,
         },
       });
       if (configureResult._tag === "Failure") {
@@ -6711,6 +6713,11 @@ function ChatViewContent(props: ChatViewProps) {
     if (composerRef.current?.validateProviderInput(outgoingImplementationPrompt) === false) {
       return;
     }
+    const selectedContainerImageId = containerImageId;
+    if (executionTarget.kind === "new-container" && !selectedContainerImageId) {
+      setThreadError(activeThread.id, "Choose a container image before starting the plan.");
+      return;
+    }
     const nextThreadTitle = truncate(buildPlanImplementationThreadTitle(planMarkdown));
     const nextThreadModelSelection: ModelSelection = ctxSelectedModelSelection;
 
@@ -6738,7 +6745,7 @@ function ChatViewContent(props: ChatViewProps) {
           id: pendingPlanContainerId,
           workspacePath: activeProject.workspaceRoot,
           networkPolicy: containerNetworkPolicy,
-          imageId: containerImageId,
+          imageId: selectedContainerImageId!,
         },
       });
       if (configureResult._tag === "Failure") {

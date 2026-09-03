@@ -3,7 +3,6 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   AgentContainerId,
   AgentContainerImageId,
-  DEFAULT_AGENT_CONTAINER_IMAGE_ID,
   defaultInstanceIdForDriver,
   EnvironmentId,
   ModelSelection,
@@ -350,7 +349,7 @@ export interface ComposerThreadDraftState {
   /** A new container selected in the composer but not configured until send. */
   pendingContainerId: AgentContainerId | null;
   /** Image used when the pending container is materialized. */
-  containerImageId: AgentContainerImageId;
+  containerImageId: AgentContainerImageId | null;
   /** Network policy used when the pending container is materialized. */
   containerNetworkPolicy: string;
   /** Carries the New container choice into subsequently-created drafts. */
@@ -748,7 +747,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   runtimeMode: null,
   interactionMode: null,
   pendingContainerId: null,
-  containerImageId: DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+  containerImageId: null,
   containerNetworkPolicy: "",
   newContainerByDefault: false,
 });
@@ -775,7 +774,7 @@ export function createEmptyThreadDraft(): ComposerThreadDraftState {
     runtimeMode: null,
     interactionMode: null,
     pendingContainerId: null,
-    containerImageId: DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+    containerImageId: null,
     containerNetworkPolicy: "",
     newContainerByDefault: false,
   };
@@ -853,7 +852,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.runtimeMode === null &&
     draft.interactionMode === null &&
     draft.pendingContainerId === null &&
-    draft.containerImageId === DEFAULT_AGENT_CONTAINER_IMAGE_ID &&
+    draft.containerImageId === null &&
     draft.containerNetworkPolicy === "" &&
     !draft.newContainerByDefault
   );
@@ -2063,7 +2062,7 @@ function partializeComposerDraftStoreState(
       draft.runtimeMode === null &&
       draft.interactionMode === null &&
       draft.pendingContainerId === null &&
-      draft.containerImageId === DEFAULT_AGENT_CONTAINER_IMAGE_ID &&
+      draft.containerImageId === null &&
       draft.containerNetworkPolicy === "" &&
       !draft.newContainerByDefault
     ) {
@@ -2145,9 +2144,7 @@ function partializeComposerDraftStoreState(
       ...(draft.runtimeMode ? { runtimeMode: draft.runtimeMode } : {}),
       ...(draft.interactionMode ? { interactionMode: draft.interactionMode } : {}),
       ...(draft.pendingContainerId ? { pendingContainerId: draft.pendingContainerId } : {}),
-      ...(draft.containerImageId !== DEFAULT_AGENT_CONTAINER_IMAGE_ID
-        ? { containerImageId: draft.containerImageId }
-        : {}),
+      ...(draft.containerImageId ? { containerImageId: draft.containerImageId } : {}),
       ...(draft.containerNetworkPolicy
         ? { containerNetworkPolicy: draft.containerNetworkPolicy }
         : {}),
@@ -2415,7 +2412,7 @@ function toHydratedThreadDraft(
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
     pendingContainerId: persistedDraft.pendingContainerId ?? null,
-    containerImageId: persistedDraft.containerImageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+    containerImageId: persistedDraft.containerImageId ?? null,
     containerNetworkPolicy: persistedDraft.containerNetworkPolicy ?? "",
     newContainerByDefault: persistedDraft.newContainerByDefault ?? false,
   };

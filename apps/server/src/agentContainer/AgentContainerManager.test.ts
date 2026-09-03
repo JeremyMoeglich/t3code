@@ -228,8 +228,8 @@ it.effect("configures containers and lists image folders while networking is una
     assert.equal(listed.unavailableReason, "TUN device unavailable");
     assert.equal(listed.imagesDirectory, NodePath.join(root, "container-images"));
     assert.deepEqual(
-      listed.images?.map((image) => image.id),
-      ["t3-default", "folder:web"],
+      listed.images.map((image) => image.id),
+      ["folder:web"],
     );
     assert.equal(listed.containers[0]?.id, id);
     assert.equal(listed.containers[0]?.imageId, "folder:web");

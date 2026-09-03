@@ -6,7 +6,6 @@ import {
 } from "@t3tools/client-runtime/environment";
 import {
   AgentContainerId,
-  DEFAULT_AGENT_CONTAINER_IMAGE_ID,
   DEFAULT_RUNTIME_MODE,
   type ScopedProjectRef,
   type ThreadId,
@@ -145,8 +144,7 @@ export function useNewThreadHandler() {
         carrySourceShell?.interactionMode ??
         carrySourceDraft?.interactionMode ??
         null;
-      const carryContainerImageId =
-        carrySourceComposer?.containerImageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID;
+      const carryContainerImageId = carrySourceComposer?.containerImageId ?? null;
       const carryContainerNetworkPolicy = carrySourceComposer?.containerNetworkPolicy ?? "";
       const carryNewContainerByDefault = carrySourceComposer?.newContainerByDefault === true;
       const applyContainerDefaults = (destinationDraftId: DraftId) => {

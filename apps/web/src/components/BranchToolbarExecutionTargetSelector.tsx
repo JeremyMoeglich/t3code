@@ -4,7 +4,7 @@ import type {
   EnvironmentId,
   ThreadExecutionTarget,
 } from "@t3tools/contracts";
-import { AgentContainerId, DEFAULT_AGENT_CONTAINER_IMAGE_ID } from "@t3tools/contracts";
+import { AgentContainerId } from "@t3tools/contracts";
 import { BoxIcon, MonitorIcon, PlusIcon, ShieldIcon } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 
@@ -218,13 +218,16 @@ export const BranchToolbarExecutionTargetSelector = memo(
               return null;
             }
             if (!workspacePath) return "A workspace is required.";
+            if (!networkDialog.container.imageId) {
+              return "This container's image definition is unavailable. Create a new container.";
+            }
             const result = await configure({
               environmentId,
               input: {
                 id: networkDialog.container.id,
                 workspacePath,
                 networkPolicy,
-                imageId: networkDialog.container.imageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+                imageId: networkDialog.container.imageId,
               },
             });
             if (result._tag === "Failure") {

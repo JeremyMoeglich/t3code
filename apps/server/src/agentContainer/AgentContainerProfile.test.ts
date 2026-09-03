@@ -17,9 +17,7 @@ it("shares default package and tool resources across containers", async () => {
       stateDir: NodePath.join(root, "state"),
       projectPath,
       projectResourceRoot,
-      defaultImage: "example/default:latest",
     });
-    assert.equal(profile.image, "example/default:latest");
     assert.equal(profile.resources.length, 2);
     assert.equal(
       profile.environment.pnpm_config_store_dir,
@@ -44,7 +42,6 @@ it("merges generic global and project resource descriptors", async () => {
     await NodeFSP.writeFile(
       NodePath.join(stateDir, "agent-container-profile.json"),
       JSON.stringify({
-        image: "example/tools:global",
         resources: [
           {
             id: "compiler-cache",
@@ -59,7 +56,6 @@ it("merges generic global and project resource descriptors", async () => {
     await NodeFSP.writeFile(
       NodePath.join(projectPath, ".t3code", "container.json"),
       JSON.stringify({
-        image: "example/tools:project",
         resources: [
           {
             id: "build-output",
@@ -74,9 +70,7 @@ it("merges generic global and project resource descriptors", async () => {
       stateDir,
       projectPath,
       projectResourceRoot,
-      defaultImage: "example/default:latest",
     });
-    assert.equal(profile.image, "example/tools:project");
     assert.equal(profile.environment.CCACHE_DIR, "/t3/compiler-cache");
     assert.equal(profile.environment.PROJECT_TOOL_MODE, "debug");
     const compilerCache = profile.resources.find((resource) => resource.id === "compiler-cache");
@@ -105,7 +99,6 @@ it("does not let a repository profile expose arbitrary host paths", async () => 
         stateDir: NodePath.join(root, "state"),
         projectPath,
         projectResourceRoot: NodePath.join(root, "worktrees", ".t3-container-resources"),
-        defaultImage: "example/default:latest",
       });
     } catch (cause) {
       failure = cause;

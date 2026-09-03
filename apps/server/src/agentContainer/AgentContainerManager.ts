@@ -6,7 +6,6 @@ import {
   AgentContainerError,
   AgentContainerId,
   AgentContainerImageId,
-  DEFAULT_AGENT_CONTAINER_IMAGE_ID,
   type AgentContainerListResult,
   type AgentContainerSummary,
 } from "@t3tools/contracts";
@@ -32,20 +31,7 @@ const MANAGED_LABEL = "dev.t3code.agent-container";
 const ID_LABEL = "dev.t3code.agent-container.id";
 const WORKSPACE_LABEL = "dev.t3code.agent-container.workspace";
 const PROFILE_LABEL = "dev.t3code.agent-container.profile";
-const DEFAULT_IMAGE = "localhost/t3code-agent-base:3";
 const CONFIG_VERSION = 1;
-
-const CONTAINERFILE = `FROM docker.io/library/node:24-bookworm-slim AS node
-FROM docker.io/library/rust:1-slim-bookworm
-COPY --from=node /usr/local/ /usr/local/
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
-  bash build-essential ca-certificates coreutils curl fd-find file findutils git jq less \\
-  procps python3 python3-pip ripgrep tree unzip zip \\
-  && rm -rf /var/lib/apt/lists/*
-RUN npm install --global corepack && corepack enable
-WORKDIR /workspace
-CMD ["sleep", "infinity"]
-`;
 
 const InspectContainer = Schema.Struct({
   Id: Schema.String,
@@ -127,7 +113,6 @@ export function makeAgentContainerManager(
   config: ServerConfig["Service"],
   podman: PodmanBackend = localPodmanBackend,
 ) {
-  const defaultImage = process.env.T3CODE_AGENT_CONTAINER_IMAGE?.trim() || DEFAULT_IMAGE;
   const configurationDirectory = NodePath.join(config.stateDir, "agent-containers");
   const imagesDirectory = NodePath.join(config.baseDir, "container-images");
 
@@ -171,7 +156,6 @@ export function makeAgentContainerManager(
             worktreeSourceForProject(projectPath),
             ".t3-container-resources",
           ),
-          defaultImage,
         }),
       catch: (cause) => error(operation, cause instanceof Error ? cause.message : String(cause)),
     });
@@ -197,7 +181,6 @@ export function makeAgentContainerManager(
         id,
         workspacePath: fallbackWorkspacePath,
         networkPolicy: "",
-        imageId: DEFAULT_AGENT_CONTAINER_IMAGE_ID,
       } satisfies AgentContainerConfiguration;
     }
     const stored = yield* decodeStoredConfiguration(contents).pipe(
@@ -215,7 +198,7 @@ export function makeAgentContainerManager(
       id: stored.id,
       workspacePath: stored.workspacePath,
       networkPolicy: stored.networkPolicy,
-      imageId: stored.imageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID,
+      ...(stored.imageId ? { imageId: stored.imageId } : {}),
     } satisfies AgentContainerConfiguration;
   });
 
@@ -300,15 +283,16 @@ export function makeAgentContainerManager(
     const storedConfigurations = yield* readStoredConfigurations();
     const configuredSummary = (
       configuration: (typeof storedConfigurations)[number],
-    ): AgentContainerSummary => {
-      const imageId = configuration.imageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID;
-      const image = images.find((candidate) => candidate.id === imageId);
+    ): AgentContainerSummary | undefined => {
+      if (!configuration.imageId) return undefined;
+      const image = images.find((candidate) => candidate.id === configuration.imageId);
+      if (!image?.imageReference) return undefined;
       return {
         id: configuration.id,
         name: containerName(configuration.id),
         workspacePath: configuration.workspacePath,
-        imageId,
-        image: image?.imageReference ?? defaultImage,
+        imageId: configuration.imageId,
+        image: image.imageReference,
         networkPolicy: configuration.networkPolicy,
         status: "created",
         createdAt: configuration.createdAt,
@@ -330,7 +314,10 @@ export function makeAgentContainerManager(
       return {
         available: false,
         unavailableReason: reason || "Podman is unavailable",
-        containers: storedConfigurations.map(configuredSummary),
+        containers: storedConfigurations.flatMap((configuration) => {
+          const summary = configuredSummary(configuration);
+          return summary ? [summary] : [];
+        }),
         imagesDirectory,
         images: publicImages,
       };
@@ -351,7 +338,10 @@ export function makeAgentContainerManager(
       ...actualContainers,
       ...storedConfigurations
         .filter((configuration) => !actualIds.has(configuration.id))
-        .map(configuredSummary),
+        .flatMap((configuration) => {
+          const summary = configuredSummary(configuration);
+          return summary ? [summary] : [];
+        }),
     ];
     return {
       available: networking.available,
@@ -362,47 +352,9 @@ export function makeAgentContainerManager(
     };
   });
 
-  const ensureImage = Effect.fn("AgentContainerManager.ensureImage")(function* (image: string) {
-    const exists = yield* Effect.tryPromise({
-      try: () => podman.run(["image", "exists", image]),
-      catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
-    });
-    if (exists.exitCode === 0) return;
-    if (image !== defaultImage || defaultImage !== DEFAULT_IMAGE)
-      return yield* error("create", `Configured container image '${image}' does not exist.`);
-    const buildDir = NodePath.join(config.stateDir, "agent-container-image");
-    yield* Effect.tryPromise({
-      try: async () => {
-        await NodeFSP.mkdir(buildDir, { recursive: true });
-        await NodeFSP.writeFile(NodePath.join(buildDir, "Containerfile"), CONTAINERFILE, "utf8");
-      },
-      catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
-    });
-    const built = yield* Effect.tryPromise({
-      try: () =>
-        podman.run([
-          "build",
-          "--network",
-          "host",
-          "--tag",
-          image,
-          "--file",
-          NodePath.join(buildDir, "Containerfile"),
-          buildDir,
-        ]),
-      catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
-    });
-    if (built.exitCode !== 0) return yield* error("create", built.stderr);
-  });
-
   const prepareImage = Effect.fn("AgentContainerManager.prepareImage")(function* (
     image: AgentContainerImage,
-    profileImage: string,
   ) {
-    if (image.source === "builtin") {
-      yield* ensureImage(profileImage);
-      return profileImage;
-    }
     if (!image.imageReference || !image.containerfilePath || !image.contextPath) {
       return yield* error("create", `Container image definition '${image.id}' is incomplete.`);
     }
@@ -530,8 +482,7 @@ export function makeAgentContainerManager(
     });
     yield* resolveProfile(workspacePath, "configure");
     const currentConfiguration = yield* readConfiguration(input.id, workspacePath, workspacePath);
-    const imageId =
-      input.imageId ?? currentConfiguration.imageId ?? DEFAULT_AGENT_CONTAINER_IMAGE_ID;
+    const imageId = input.imageId;
     const policy = yield* Effect.try({
       try: () => parseNetworkPolicy(input.networkPolicy),
       catch: (cause) => error("configure", cause instanceof Error ? cause.message : String(cause)),
@@ -539,7 +490,7 @@ export function makeAgentContainerManager(
     const existing = (yield* inspectManaged()).find(
       (entry) => entry.Config.Labels[ID_LABEL] === input.id,
     );
-    if (!existing && !(yield* listImages("configure")).some((image) => image.id === imageId)) {
+    if (!(yield* listImages("configure")).some((image) => image.id === imageId)) {
       return yield* error(
         "configure",
         `Container image definition '${imageId}' was not found in '${imagesDirectory}'.`,
@@ -597,6 +548,12 @@ export function makeAgentContainerManager(
         input.id,
         existing?.Config.Labels[WORKSPACE_LABEL] ?? requestedWorkspacePath,
       );
+      if (!configuration.imageId) {
+        return yield* error(
+          "create",
+          `Container '${input.id}' has no folder image configured. Select New container and choose an image.`,
+        );
+      }
       const projectPath = yield* Effect.tryPromise({
         try: () => NodeFSP.realpath(configuration.workspacePath),
         catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
@@ -661,7 +618,7 @@ export function makeAgentContainerManager(
             `Container image definition '${configuration.imageId}' was not found in '${imagesDirectory}'.`,
           );
         }
-        const image = yield* prepareImage(selectedImage, profile.image);
+        const image = yield* prepareImage(selectedImage);
         name = containerName(input.id);
         const createArgs = [
           "create",

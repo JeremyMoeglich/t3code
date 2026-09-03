@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { spawn, type ChildProcessByStdio, type SpawnOptionsWithoutStdio } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
-import type { Readable, Writable } from "node:stream";
+import type * as NodeStream from "node:stream";
 
 export interface PodmanProcessResult {
   readonly stdout: string;
@@ -16,10 +16,14 @@ export interface PodmanBackend {
   }>;
   readonly spawn: (
     args: ReadonlyArray<string>,
-    options: SpawnOptionsWithoutStdio & {
+    options: NodeChildProcess.SpawnOptionsWithoutStdio & {
       readonly stdio: readonly ["pipe", "pipe", "pipe"];
     },
-  ) => ChildProcessByStdio<Writable, Readable, Readable>;
+  ) => NodeChildProcess.ChildProcessByStdio<
+    NodeStream.Writable,
+    NodeStream.Readable,
+    NodeStream.Readable
+  >;
   readonly run: (
     args: ReadonlyArray<string>,
     options?: { readonly input?: string | Uint8Array },
@@ -44,10 +48,10 @@ export const localPodmanBackend: PodmanBackend = {
       };
     }
   },
-  spawn: (args, options) => spawn("podman", args, options),
+  spawn: (args, options) => NodeChildProcess.spawn("podman", args, options),
   run: (args, options) =>
     new Promise((resolve, reject) => {
-      const child = spawn("podman", args, {
+      const child = NodeChildProcess.spawn("podman", args, {
         stdio: [options?.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       });
       let stdout = "";

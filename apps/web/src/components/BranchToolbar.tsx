@@ -63,12 +63,12 @@ interface BranchToolbarProps {
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
   showExecutionTarget: boolean;
   executionTarget: ComposerExecutionTarget;
-  containerImageId: AgentContainerImageId;
+  containerImageId: AgentContainerImageId | null;
   executionTargetLocked: boolean;
   onExecutionTargetChange: (target: ComposerExecutionTarget) => void;
   newContainerNetworkPolicy: string;
   onNewContainerNetworkPolicyChange: (networkPolicy: string) => void;
-  onContainerImageChange: (imageId: AgentContainerImageId) => void;
+  onContainerImageChange: (imageId: AgentContainerImageId | null) => void;
 }
 
 interface MobileRunContextSelectorProps {

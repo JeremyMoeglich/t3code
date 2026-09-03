@@ -5,7 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, it } from "@effect/vitest";
-import { AgentContainerId } from "@t3tools/contracts";
+import { AgentContainerId, AgentContainerImageId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import type { ServerConfig } from "../config.ts";
@@ -29,72 +29,86 @@ function get(url: string): Promise<{ readonly status: number; readonly body: str
   });
 }
 
-it.runIf(process.env.T3_LIVE_PODMAN_NETWORK === "1")(
+it.effect.runIf(process.env.T3_LIVE_PODMAN_NETWORK === "1")(
   "enforces live egress changes and relays an internal port to host loopback",
-  async () => {
-    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-agent-network-live-"));
-    const workspacePath = NodePath.join(root, "workspace");
-    await NodeFSP.mkdir(workspacePath);
-    const id = AgentContainerId.make(`live-${process.pid}`);
-    const manager = makeAgentContainerManager({
-      baseDir: root,
-      stateDir: NodePath.join(root, "state"),
-      worktreesDir: NodePath.join(root, "worktrees"),
-    } as ServerConfig["Service"]);
-    try {
-      await Effect.runPromise(manager.configure({ id, workspacePath, networkPolicy: "" }));
-      const env = await Effect.runPromise(manager.executionEnvironment({ id, workspacePath }));
-      const blocked = await env.exec("curl --silent --show-error --max-time 2 https://example.com");
-      assert.isTrue(blocked.ok && blocked.value.exitCode !== 0);
-
-      await Effect.runPromise(
-        manager.configure({
-          id,
-          workspacePath,
-          networkPolicy: "allow 0.0.0.0/0\nallow ::/0",
+  () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-agent-network-live-")),
+      );
+      const workspacePath = NodePath.join(root, "workspace");
+      yield* Effect.promise(() => NodeFSP.mkdir(workspacePath));
+      const imagePath = NodePath.join(root, "container-images", "live-test");
+      yield* Effect.promise(() => NodeFSP.mkdir(imagePath, { recursive: true }));
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          NodePath.join(imagePath, "Containerfile"),
+          "FROM localhost/t3code-agent-base:3\n",
+        ),
+      );
+      const id = AgentContainerId.make(`live-${process.pid}`);
+      const imageId = AgentContainerImageId.make("folder:live-test");
+      const manager = makeAgentContainerManager({
+        baseDir: root,
+        stateDir: NodePath.join(root, "state"),
+        worktreesDir: NodePath.join(root, "worktrees"),
+      } as ServerConfig["Service"]);
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          const ids = await localPodmanBackend.run([
+            "ps",
+            "-a",
+            "--filter",
+            `label=dev.t3code.agent-container.id=${id}`,
+            "--format",
+            "{{.ID}}",
+          ]);
+          for (const containerId of ids.stdout.split(/\s+/).filter(Boolean)) {
+            await localPodmanBackend.run(["rm", "--force", containerId]);
+          }
+          await NodeFSP.rm(root, { recursive: true, force: true });
         }),
       );
-      const allowed = await env.exec(
-        "curl --silent --show-error --max-time 10 https://example.com",
+
+      yield* manager.configure({ id, workspacePath, networkPolicy: "", imageId });
+      const env = yield* manager.executionEnvironment({ id, workspacePath });
+      const blocked = yield* Effect.promise(() =>
+        env.exec("curl --silent --show-error --max-time 2 https://example.com"),
+      );
+      assert.isTrue(blocked.ok && blocked.value.exitCode !== 0);
+
+      yield* manager.configure({
+        id,
+        workspacePath,
+        networkPolicy: "allow 0.0.0.0/0\nallow ::/0",
+        imageId,
+      });
+      const allowed = yield* Effect.promise(() =>
+        env.exec("curl --silent --show-error --max-time 10 https://example.com"),
       );
       assert.isTrue(allowed.ok && allowed.value.exitCode === 0);
 
-      const server = await env.exec(
-        "python3 -m http.server 8123 --bind 127.0.0.1 >/tmp/t3-http.log 2>&1 &",
+      const server = yield* Effect.promise(() =>
+        env.exec("python3 -m http.server 8123 --bind 127.0.0.1 >/tmp/t3-http.log 2>&1 &"),
       );
       assert.isTrue(server.ok && server.value.exitCode === 0);
-      const exposed = await env.exposePort(8123);
-      const response = await get(exposed.url);
+      const exposed = yield* Effect.promise(() => env.exposePort(8123));
+      const response = yield* Effect.promise(() => get(exposed.url));
       assert.equal(response.status, 200);
       assert.include(response.body, "Directory listing");
 
-      await Effect.runPromise(
-        manager.configure({
-          id,
-          workspacePath,
-          networkPolicy: "allow dns tcp,udp 53",
-        }),
-      );
-      const restricted = await env.exec(
-        "curl --silent --show-error --max-time 2 https://example.com",
+      yield* manager.configure({
+        id,
+        workspacePath,
+        networkPolicy: "allow dns tcp,udp 53",
+        imageId,
+      });
+      const restricted = yield* Effect.promise(() =>
+        env.exec("curl --silent --show-error --max-time 2 https://example.com"),
       );
       assert.isTrue(restricted.ok && restricted.value.exitCode !== 0);
-      await env.cleanup();
-    } finally {
-      const ids = await localPodmanBackend.run([
-        "ps",
-        "-a",
-        "--filter",
-        `label=dev.t3code.agent-container.id=${id}`,
-        "--format",
-        "{{.ID}}",
-      ]);
-      for (const containerId of ids.stdout.split(/\s+/).filter(Boolean)) {
-        await localPodmanBackend.run(["rm", "--force", containerId]);
-      }
-      await NodeFSP.rm(root, { recursive: true, force: true });
-    }
-  },
+      yield* Effect.promise(() => env.cleanup());
+    }),
   30_000,
 );
 
