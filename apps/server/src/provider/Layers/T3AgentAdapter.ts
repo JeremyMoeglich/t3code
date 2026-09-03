@@ -86,6 +86,7 @@ interface T3AgentSessionContext {
   activeTurnId: TurnId | undefined;
   activeAssistantItemId: RuntimeItemId | undefined;
   activeReasoningItemId: RuntimeItemId | undefined;
+  readonly activeToolInputs: Map<string, unknown>;
   interrupted: boolean;
 }
 
@@ -231,6 +232,91 @@ function toolItemType(toolName: string): "command_execution" | "file_change" | "
   if (toolName === "bash") return "command_execution";
   if (toolName === "edit" || toolName === "write") return "file_change";
   return "dynamic_tool_call";
+}
+
+function toolArgs(args: unknown): Record<string, unknown> {
+  return args !== null && typeof args === "object" && !Array.isArray(args)
+    ? (args as Record<string, unknown>)
+    : {};
+}
+
+function humanizeToolName(toolName: string): string {
+  const words = toolName.replaceAll("_", " ").trim();
+  return words.length > 0 ? words.charAt(0).toUpperCase() + words.slice(1) : "Tool call";
+}
+
+function toolLifecyclePayload(input: {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly args: unknown;
+  readonly status: "inProgress" | "completed" | "failed";
+  readonly output?: string;
+}) {
+  const args = toolArgs(input.args);
+  const path = typeof args.path === "string" ? args.path.trim() : "";
+  const command = typeof args.command === "string" ? args.command.trim() : "";
+  const output = input.output?.trim() ?? "";
+  const data: Record<string, unknown> = {
+    toolCallId: input.toolCallId,
+    rawInput: input.args,
+    ...(output ? { rawOutput: { content: output } } : {}),
+  };
+
+  if (input.toolName === "bash") {
+    return {
+      itemType: "command_execution" as const,
+      status: input.status,
+      title: "Ran command",
+      ...(command ? { detail: command } : {}),
+      data: {
+        ...data,
+        kind: "execute",
+        ...(command ? { command } : {}),
+      },
+    };
+  }
+
+  if (input.toolName === "read") {
+    return {
+      itemType: "dynamic_tool_call" as const,
+      status: input.status,
+      title: "Read File",
+      ...(path ? { detail: path } : {}),
+      data: { ...data, kind: "read" },
+    };
+  }
+
+  if (input.toolName === "edit" || input.toolName === "write") {
+    return {
+      itemType: "file_change" as const,
+      status: input.status,
+      title: input.toolName === "edit" ? "Edited File" : "Wrote File",
+      ...(path ? { detail: path } : {}),
+      data: {
+        ...data,
+        kind: input.toolName,
+        ...(path ? { path } : {}),
+      },
+    };
+  }
+
+  if (input.toolName === "expose_port") {
+    const port = typeof args.port === "number" ? args.port : undefined;
+    return {
+      itemType: "dynamic_tool_call" as const,
+      status: input.status,
+      title: "Exposed Port",
+      ...(port !== undefined ? { detail: `Container port ${port}` } : {}),
+      data: { ...data, kind: "network" },
+    };
+  }
+
+  return {
+    itemType: toolItemType(input.toolName),
+    status: input.status,
+    title: humanizeToolName(input.toolName),
+    data,
+  };
 }
 
 function approvalType(toolName: string): PendingApproval["requestType"] {
@@ -518,16 +604,17 @@ export const makeT3AgentAdapter = Effect.fn("makeT3AgentAdapter")(function* (
       return;
     }
     if (event.type === "tool_execution_start") {
+      context.activeToolInputs.set(event.toolCallId, event.args);
       await emit({
         ...base(context, turnId),
         type: "item.started",
         itemId: RuntimeItemId.make(event.toolCallId),
-        payload: {
-          itemType: toolItemType(event.toolName),
+        payload: toolLifecyclePayload({
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          args: event.args,
           status: "inProgress",
-          title: event.toolName,
-          data: { args: event.args },
-        },
+        }),
       });
       return;
     }
@@ -536,26 +623,30 @@ export const makeT3AgentAdapter = Effect.fn("makeT3AgentAdapter")(function* (
         ...base(context, turnId),
         type: "item.updated",
         itemId: RuntimeItemId.make(event.toolCallId),
-        payload: {
-          itemType: toolItemType(event.toolName),
+        payload: toolLifecyclePayload({
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          args: event.args,
           status: "inProgress",
-          title: event.toolName,
-          data: { output: toolResultText(event.partialResult) },
-        },
+          output: toolResultText(event.partialResult),
+        }),
       });
       return;
     }
     if (event.type === "tool_execution_end") {
+      const args = context.activeToolInputs.get(event.toolCallId);
+      context.activeToolInputs.delete(event.toolCallId);
       await emit({
         ...base(context, turnId),
         type: "item.completed",
         itemId: RuntimeItemId.make(event.toolCallId),
-        payload: {
-          itemType: toolItemType(event.toolName),
+        payload: toolLifecyclePayload({
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          args,
           status: event.isError ? "failed" : "completed",
-          title: event.toolName,
-          data: { output: toolResultText(event.result) },
-        },
+          output: toolResultText(event.result),
+        }),
       });
       return;
     }
@@ -579,6 +670,7 @@ export const makeT3AgentAdapter = Effect.fn("makeT3AgentAdapter")(function* (
       context.activeTurnId = undefined;
       context.activeAssistantItemId = undefined;
       context.activeReasoningItemId = undefined;
+      context.activeToolInputs.clear();
       context.interrupted = false;
       context.agent.state.messages = buildSessionContext(
         await pathEntries(context.history),
@@ -714,6 +806,7 @@ export const makeT3AgentAdapter = Effect.fn("makeT3AgentAdapter")(function* (
         activeTurnId: undefined,
         activeAssistantItemId: undefined,
         activeReasoningItemId: undefined,
+        activeToolInputs: new Map(),
         interrupted: false,
       };
       agent.subscribe((event) => handleAgentEvent(context, event));

@@ -1467,6 +1467,113 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("derives useful work-log rows from T3 Agent tool lifecycle payloads", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "t3-bash-update",
+        createdAt: "2026-09-03T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          detail: "pnpm test",
+          status: "inProgress",
+          toolCallId: "t3-bash-call",
+          data: {
+            toolCallId: "t3-bash-call",
+            kind: "execute",
+            command: "pnpm test",
+            rawInput: { command: "pnpm test" },
+          },
+        },
+      }),
+      makeActivity({
+        id: "t3-bash-complete",
+        createdAt: "2026-09-03T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          detail: "pnpm test",
+          status: "completed",
+          toolCallId: "t3-bash-call",
+          data: {
+            toolCallId: "t3-bash-call",
+            kind: "execute",
+            command: "pnpm test",
+            rawInput: { command: "pnpm test" },
+            rawOutput: { content: "12 tests passed" },
+          },
+        },
+      }),
+      makeActivity({
+        id: "t3-read-complete",
+        createdAt: "2026-09-03T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "Read File",
+        payload: {
+          itemType: "dynamic_tool_call",
+          detail: "package.json",
+          status: "completed",
+          toolCallId: "t3-read-call",
+          data: {
+            toolCallId: "t3-read-call",
+            kind: "read",
+            rawInput: { path: "package.json" },
+            rawOutput: { content: '{ "name": "t3code" }' },
+          },
+        },
+      }),
+      makeActivity({
+        id: "t3-write-complete",
+        createdAt: "2026-09-03T00:00:04.000Z",
+        kind: "tool.completed",
+        summary: "Wrote File",
+        payload: {
+          itemType: "file_change",
+          detail: "result.txt",
+          status: "completed",
+          toolCallId: "t3-write-call",
+          data: {
+            toolCallId: "t3-write-call",
+            kind: "write",
+            path: "result.txt",
+            rawInput: { path: "result.txt", content: "done" },
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries).toHaveLength(3);
+    expect(entries[0]).toMatchObject({
+      id: "t3-bash-complete",
+      toolCallId: "t3-bash-call",
+      command: "pnpm test",
+      detail: "12 tests passed",
+      label: "Ran command",
+      itemType: "command_execution",
+      requestKind: "command",
+      toolLifecycleStatus: "completed",
+    });
+    expect(entries[1]).toMatchObject({
+      toolCallId: "t3-read-call",
+      detail: "package.json",
+      label: "Read File",
+      itemType: "dynamic_tool_call",
+      requestKind: "file-read",
+    });
+    expect(entries[1]?.changedFiles).toBeUndefined();
+    expect(entries[2]).toMatchObject({
+      toolCallId: "t3-write-call",
+      detail: "result.txt",
+      changedFiles: ["result.txt"],
+      label: "Wrote File",
+      itemType: "file_change",
+      requestKind: "file-change",
+    });
+  });
+
   it("extracts changed file paths for file-change tool activities", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

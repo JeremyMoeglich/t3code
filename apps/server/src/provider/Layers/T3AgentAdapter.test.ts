@@ -158,7 +158,7 @@ it.effect("runs an Agent turn, persists it, restores it, and rolls it back", () 
   }),
 );
 
-it.effect("runs host tools without runtime approval modes", () =>
+it.effect("runs host tools without runtime approval modes and emits rich tool metadata", () =>
   Effect.gen(function* () {
     const root = yield* Effect.promise(() =>
       NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-agent-approval-")),
@@ -167,10 +167,18 @@ it.effect("runs host tools without runtime approval modes", () =>
       Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true })),
     );
     const { faux, models } = testModels();
+    yield* Effect.promise(() => NodeFSP.writeFile(NodePath.join(root, "input.txt"), "hello\n"));
     faux.setResponses([
-      fauxAssistantMessage(fauxToolCall("bash", { command: "printf approved" }), {
-        stopReason: "toolUse",
-      }),
+      fauxAssistantMessage(
+        [
+          fauxToolCall("read", { path: "input.txt" }, { id: "read-call" }),
+          fauxToolCall("bash", { command: "printf approved" }, { id: "bash-call" }),
+          fauxToolCall("write", { path: "output.txt", content: "written\n" }, { id: "write-call" }),
+        ],
+        {
+          stopReason: "toolUse",
+        },
+      ),
       fauxAssistantMessage("done"),
     ]);
     const adapter = yield* makeT3AgentAdapter({
@@ -198,16 +206,43 @@ it.effect("runs host tools without runtime approval modes", () =>
     yield* adapter.sendTurn({ threadId, input: "run it" });
     yield* Deferred.await(completed).pipe(Effect.timeout("2 seconds"));
     assert.isFalse(events.some((event) => event.type === "request.opened"));
-    const bashCompletion = events.find(
-      (event) => event.type === "item.completed" && event.payload.itemType === "command_execution",
-    );
-    const output =
-      bashCompletion?.type === "item.completed" &&
-      bashCompletion.payload.data !== null &&
-      typeof bashCompletion.payload.data === "object"
-        ? (bashCompletion.payload.data as { output?: unknown }).output
-        : undefined;
-    assert.isTrue(typeof output === "string" && output.includes("approved"));
+    const completion = (itemType: "command_execution" | "dynamic_tool_call" | "file_change") =>
+      events.find(
+        (event) => event.type === "item.completed" && event.payload.itemType === itemType,
+      );
+    const bashCompletion = completion("command_execution");
+    assert.equal(bashCompletion?.type, "item.completed");
+    if (bashCompletion?.type === "item.completed") {
+      assert.equal(bashCompletion.payload.title, "Ran command");
+      assert.equal(bashCompletion.payload.detail, "printf approved");
+      assert.deepInclude(bashCompletion.payload.data, {
+        toolCallId: "bash-call",
+        kind: "execute",
+        command: "printf approved",
+        rawOutput: { content: "approved" },
+      });
+    }
+    const readCompletion = completion("dynamic_tool_call");
+    assert.equal(readCompletion?.type, "item.completed");
+    if (readCompletion?.type === "item.completed") {
+      assert.equal(readCompletion.payload.title, "Read File");
+      assert.equal(readCompletion.payload.detail, "input.txt");
+      assert.deepInclude(readCompletion.payload.data, {
+        toolCallId: "read-call",
+        kind: "read",
+      });
+    }
+    const writeCompletion = completion("file_change");
+    assert.equal(writeCompletion?.type, "item.completed");
+    if (writeCompletion?.type === "item.completed") {
+      assert.equal(writeCompletion.payload.title, "Wrote File");
+      assert.equal(writeCompletion.payload.detail, "output.txt");
+      assert.deepInclude(writeCompletion.payload.data, {
+        toolCallId: "write-call",
+        kind: "write",
+        path: "output.txt",
+      });
+    }
     yield* adapter.stopSession(threadId);
     yield* Fiber.interrupt(eventFiber);
   }),

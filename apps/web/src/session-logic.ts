@@ -1741,6 +1741,17 @@ function extractWorkLogRequestKind(
   ) {
     return payload.requestKind;
   }
+  const data = asRecord(payload?.data);
+  const kind = asTrimmedString(data?.kind)?.toLowerCase();
+  if (kind === "execute" || kind === "command") {
+    return "command";
+  }
+  if (kind === "read" || kind === "file-read") {
+    return "file-read";
+  }
+  if (kind === "edit" || kind === "write" || kind === "file-change") {
+    return "file-change";
+  }
   return requestKindFromRequestType(payload?.requestType) ?? undefined;
 }
 
