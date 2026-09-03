@@ -540,12 +540,14 @@ export const BranchToolbar = memo(function BranchToolbar({
 
       {showExecutionTarget ? (
         <>
-          <BranchToolbarContainerImageSelector
-            environmentId={environmentId}
-            value={containerImageId}
-            locked={executionTargetLocked}
-            onChange={onContainerImageChange}
-          />
+          {executionTarget.kind === "new-container" ? (
+            <BranchToolbarContainerImageSelector
+              environmentId={environmentId}
+              value={containerImageId}
+              locked={executionTargetLocked}
+              onChange={onContainerImageChange}
+            />
+          ) : null}
           <BranchToolbarExecutionTargetSelector
             environmentId={environmentId}
             workspacePath={activeProject.workspaceRoot}
