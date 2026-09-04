@@ -70,7 +70,13 @@ it.effect.runIf(process.env.T3_LIVE_PODMAN_NETWORK === "1")(
         }),
       );
 
-      yield* manager.configure({ id, workspacePath, networkPolicy: "", imageId });
+      yield* manager.configure({
+        id,
+        workspacePath,
+        networkMode: "custom",
+        networkPolicy: "",
+        imageId,
+      });
       const env = yield* manager.executionEnvironment({ id, workspacePath });
       const blocked = yield* Effect.promise(() =>
         env.exec("curl --silent --show-error --max-time 2 https://example.com"),
@@ -80,6 +86,7 @@ it.effect.runIf(process.env.T3_LIVE_PODMAN_NETWORK === "1")(
       yield* manager.configure({
         id,
         workspacePath,
+        networkMode: "internet",
         networkPolicy: "allow 0.0.0.0/0\nallow ::/0",
         imageId,
       });
@@ -100,6 +107,7 @@ it.effect.runIf(process.env.T3_LIVE_PODMAN_NETWORK === "1")(
       yield* manager.configure({
         id,
         workspacePath,
+        networkMode: "custom",
         networkPolicy: "allow dns tcp,udp 53",
         imageId,
       });

@@ -313,6 +313,7 @@ describe("composerDraftStore clearComposerContent", () => {
     store.setContainerComposerState(threadRef, {
       pendingContainerId,
       containerImageId,
+      containerNetworkMode: "custom",
       containerNetworkPolicy: "allow 10.0.0.0/8",
       newContainerByDefault: true,
     });
@@ -323,9 +324,40 @@ describe("composerDraftStore clearComposerContent", () => {
       prompt: "",
       pendingContainerId,
       containerImageId,
+      containerNetworkMode: "custom",
       containerNetworkPolicy: "allow 10.0.0.0/8",
       newContainerByDefault: true,
     });
+  });
+
+  it("migrates a persisted pre-mode Internet policy to isolated Internet", () => {
+    const store = useComposerDraftStore.getState();
+    store.setContainerComposerState(threadRef, {
+      pendingContainerId: AgentContainerId.make("legacy-container"),
+      containerNetworkMode: "internet",
+      containerNetworkPolicy: "allow 0.0.0.0/0\nallow ::/0",
+    });
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => {
+          draftsByThreadKey: Record<string, { containerNetworkMode?: string }>;
+        };
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const options = persistApi.getOptions();
+    const persisted = options.partialize(useComposerDraftStore.getState());
+    delete persisted.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]
+      ?.containerNetworkMode;
+
+    const hydrated = options.merge(persisted, useComposerDraftStore.getInitialState());
+
+    expect(
+      hydrated.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]?.containerNetworkMode,
+    ).toBe("internet");
   });
 });
 

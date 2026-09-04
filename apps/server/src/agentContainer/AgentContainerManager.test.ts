@@ -34,8 +34,10 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
     let created = false;
     let running = false;
     let imageCached = false;
+    let networkAvailabilityCalls = 0;
     let currentContainerId = "container-1";
     let currentContainerName = "t3-agent-container-1";
+    let currentNetworkMode = "pasta";
     let profileLabel: string | undefined;
     const inspect = () =>
       JSON.stringify([
@@ -52,7 +54,7 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
               ...(profileLabel ? { "dev.t3code.agent-container.profile": profileLabel } : {}),
             },
           },
-          HostConfig: { NetworkMode: "pasta" },
+          HostConfig: { NetworkMode: currentNetworkMode },
           ResolvConfPath: resolvConfPath,
           State: {
             Status: running ? "running" : "created",
@@ -61,7 +63,10 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
         },
       ]);
     const podman: PodmanBackend = {
-      networkAvailability: () => Promise.resolve({ available: true }),
+      networkAvailability: () => {
+        networkAvailabilityCalls += 1;
+        return Promise.resolve({ available: true });
+      },
       spawn: () => {
         throw new Error("Tool execution is outside this lifecycle test.");
       },
@@ -98,6 +103,7 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
         if (args[0] === "tag") imageCached = true;
         if (args[0] === "create") {
           created = true;
+          currentNetworkMode = args[args.indexOf("--network") + 1]?.split(":")[0] ?? "none";
           currentContainerName = args[args.indexOf("--name") + 1] ?? currentContainerName;
           currentContainerId =
             args
@@ -124,6 +130,7 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
     yield* manager.configure({
       id,
       workspacePath,
+      networkMode: "custom",
       networkPolicy: "allow 0.0.0.0/0\ndeny 10.0.0.0/8\nallow dns udp 53",
       imageId: AgentContainerImageId.make("folder:typescript"),
     });
@@ -204,6 +211,7 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
     yield* manager.configure({
       id: importedId,
       workspacePath,
+      networkMode: "offline",
       networkPolicy: "",
       imageId: AgentContainerImageId.make("folder:typescript"),
     });
@@ -223,7 +231,32 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
     );
     assert.isDefined(importedTag);
     assert.equal(importedCreate?.at(-1), importedTag[2]);
+    assert.isTrue(importedCreate?.includes("none"));
     assert.isFalse(calls.some(({ args }) => args[0] === "build"));
+    assert.isFalse(calls.some(({ args }) => args.includes("nft")));
+    assert.equal(networkAvailabilityCalls, 1);
+
+    calls.length = 0;
+    created = false;
+    running = false;
+    imageCached = true;
+    const hostId = AgentContainerId.make("container-host");
+    yield* manager.configure({
+      id: hostId,
+      workspacePath,
+      networkMode: "host",
+      networkPolicy: "allow 10.0.0.0/8",
+      imageId: AgentContainerImageId.make("folder:typescript"),
+    });
+    const hostEnvironment = yield* manager.executionEnvironment({
+      id: hostId,
+      workspacePath,
+    });
+    const hostCreate = calls.find(({ args }) => args[0] === "create")?.args;
+    assert.isTrue(hostCreate?.includes("host"));
+    assert.equal(hostEnvironment.cwd, "/workspace");
+    assert.isFalse(calls.some(({ args }) => args.includes("nft")));
+    assert.equal(networkAvailabilityCalls, 1);
   }),
 );
 
@@ -281,22 +314,39 @@ it.effect("configures containers and lists image folders while networking is una
     const configuration = yield* manager.configure({
       id,
       workspacePath,
+      networkMode: "offline",
       networkPolicy: "",
       imageId: AgentContainerImageId.make("folder:web"),
     });
+    const legacyId = AgentContainerId.make("legacy-internet");
+    const configurationDirectory = NodePath.join(root, "state", "agent-containers");
+    yield* Effect.promise(() =>
+      NodeFSP.writeFile(
+        NodePath.join(
+          configurationDirectory,
+          `${Buffer.from(String(legacyId)).toString("base64url")}.json`,
+        ),
+        `{"version":1,"id":"${legacyId}","workspacePath":"${workspacePath}","networkPolicy":"allow 0.0.0.0/0\\nallow ::/0","imageId":"folder:web"}\n`,
+      ),
+    );
     const listed = yield* manager.list();
 
     assert.equal(configuration.imageId, "folder:web");
-    assert.isFalse(listed.available);
-    assert.equal(listed.unavailableReason, "TUN device unavailable");
+    assert.equal(configuration.networkMode, "offline");
+    assert.isTrue(listed.available);
+    assert.isFalse(listed.isolatedNetworkingAvailable);
+    assert.equal(listed.isolatedNetworkingUnavailableReason, "TUN device unavailable");
     assert.equal(listed.imagesDirectory, NodePath.join(root, "container-images"));
     assert.deepEqual(
       listed.images.map((image) => image.id),
       ["folder:web"],
     );
     assert.equal(listed.images[0]?.source, "oci");
-    assert.equal(listed.containers[0]?.id, id);
-    assert.equal(listed.containers[0]?.imageId, "folder:web");
-    assert.equal(listed.containers[0]?.status, "created");
+    const offline = listed.containers.find((container) => container.id === id);
+    assert.equal(offline?.imageId, "folder:web");
+    assert.equal(offline?.networkMode, "offline");
+    assert.equal(offline?.status, "created");
+    const legacy = listed.containers.find((container) => container.id === legacyId);
+    assert.equal(legacy?.networkMode, "internet");
   }),
 );

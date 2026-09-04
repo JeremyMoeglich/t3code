@@ -2,6 +2,7 @@ import {
   type ApprovalRequestId,
   AgentContainerId,
   type AgentContainerImageId,
+  type AgentContainerNetworkMode,
   type ChatFileAttachment,
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
@@ -1405,6 +1406,9 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const containerImageId = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.containerImageId ?? null,
+  );
+  const containerNetworkMode = useComposerDraftStore(
+    (store) => store.getComposerDraft(composerDraftTarget)?.containerNetworkMode ?? "offline",
   );
   const containerNetworkPolicy = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.containerNetworkPolicy ?? "",
@@ -3072,10 +3076,13 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [composerDraftTarget, executionTargetLocked, setContainerComposerState],
   );
-  const onNewContainerNetworkPolicyChange = useCallback(
-    (networkPolicy: string) => {
+  const onNewContainerNetworkChange = useCallback(
+    (networkMode: AgentContainerNetworkMode, networkPolicy: string) => {
       if (executionTargetLocked) return;
-      setContainerComposerState(composerDraftTarget, { containerNetworkPolicy: networkPolicy });
+      setContainerComposerState(composerDraftTarget, {
+        containerNetworkMode: networkMode,
+        containerNetworkPolicy: networkPolicy,
+      });
     },
     [composerDraftTarget, executionTargetLocked, setContainerComposerState],
   );
@@ -6091,6 +6098,7 @@ function ChatViewContent(props: ChatViewProps) {
         input: {
           id: pendingContainerTargetId!,
           workspacePath: activeProject.workspaceRoot,
+          networkMode: containerNetworkMode,
           networkPolicy: containerNetworkPolicy,
           imageId: selectedContainerImageId!,
         },
@@ -6214,6 +6222,7 @@ function ChatViewContent(props: ChatViewProps) {
           setContainerComposerState(scopeThreadRef(activeThread.environmentId, threadIdForSend), {
             pendingContainerId: null,
             containerImageId,
+            containerNetworkMode,
             containerNetworkPolicy,
             newContainerByDefault: executionTarget.kind === "new-container",
           });
@@ -6744,6 +6753,7 @@ function ChatViewContent(props: ChatViewProps) {
         input: {
           id: pendingPlanContainerId,
           workspacePath: activeProject.workspaceRoot,
+          networkMode: containerNetworkMode,
           networkPolicy: containerNetworkPolicy,
           imageId: selectedContainerImageId!,
         },
@@ -6800,6 +6810,7 @@ function ChatViewContent(props: ChatViewProps) {
         setContainerComposerState(scopeThreadRef(activeThread.environmentId, nextThreadId), {
           pendingContainerId: null,
           containerImageId,
+          containerNetworkMode,
           containerNetworkPolicy,
           newContainerByDefault: true,
         });
@@ -7549,10 +7560,9 @@ function ChatViewContent(props: ChatViewProps) {
                                 containerImageId={containerImageId}
                                 executionTargetLocked={executionTargetLocked}
                                 onExecutionTargetChange={onExecutionTargetChange}
+                                newContainerNetworkMode={containerNetworkMode}
                                 newContainerNetworkPolicy={containerNetworkPolicy}
-                                onNewContainerNetworkPolicyChange={
-                                  onNewContainerNetworkPolicyChange
-                                }
+                                onNewContainerNetworkChange={onNewContainerNetworkChange}
                                 onContainerImageChange={onContainerImageChange}
                                 onComposerFocusRequest={scheduleComposerFocus}
                                 {...(canCheckoutPullRequestIntoThread

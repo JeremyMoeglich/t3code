@@ -145,6 +145,7 @@ export function useNewThreadHandler() {
         carrySourceDraft?.interactionMode ??
         null;
       const carryContainerImageId = carrySourceComposer?.containerImageId ?? null;
+      const carryContainerNetworkMode = carrySourceComposer?.containerNetworkMode ?? "offline";
       const carryContainerNetworkPolicy = carrySourceComposer?.containerNetworkPolicy ?? "";
       const carryNewContainerByDefault = carrySourceComposer?.newContainerByDefault === true;
       const applyContainerDefaults = (destinationDraftId: DraftId) => {
@@ -153,6 +154,7 @@ export function useNewThreadHandler() {
             ? AgentContainerId.make(randomUUID())
             : null,
           containerImageId: carryContainerImageId,
+          containerNetworkMode: carryContainerNetworkMode,
           containerNetworkPolicy: carryContainerNetworkPolicy,
           newContainerByDefault: carryNewContainerByDefault,
         });

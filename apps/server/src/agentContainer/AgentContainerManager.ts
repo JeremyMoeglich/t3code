@@ -1,11 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // @effect-diagnostics globalDateInEffect:off
 import {
+  AGENT_CONTAINER_INTERNET_POLICY,
   type AgentContainerConfiguration,
   type AgentContainerConfigureInput,
   AgentContainerError,
   AgentContainerId,
   AgentContainerImageId,
+  AgentContainerNetworkMode,
   type AgentContainerListResult,
   type AgentContainerSummary,
 } from "@t3tools/contracts";
@@ -36,7 +38,7 @@ const MANAGED_LABEL = "dev.t3code.agent-container";
 const ID_LABEL = "dev.t3code.agent-container.id";
 const WORKSPACE_LABEL = "dev.t3code.agent-container.workspace";
 const PROFILE_LABEL = "dev.t3code.agent-container.profile";
-const CONFIG_VERSION = 1;
+const CONFIG_VERSION = 2;
 
 const InspectContainer = Schema.Struct({
   Id: Schema.String,
@@ -51,18 +53,30 @@ const InspectContainer = Schema.Struct({
   State: Schema.Struct({ Status: Schema.String, Pid: Schema.Number }),
 });
 
-const StoredConfiguration = Schema.Struct({
-  version: Schema.Literal(CONFIG_VERSION),
+const StoredConfigurationV1 = Schema.Struct({
+  version: Schema.Literal(1),
   id: AgentContainerId,
   workspacePath: Schema.String,
   networkPolicy: Schema.String,
   imageId: Schema.optional(AgentContainerImageId),
   createdAt: Schema.optional(Schema.String),
 });
+const StoredConfiguration = Schema.Struct({
+  version: Schema.Literal(CONFIG_VERSION),
+  id: AgentContainerId,
+  workspacePath: Schema.String,
+  networkMode: AgentContainerNetworkMode,
+  networkPolicy: Schema.String,
+  imageId: Schema.optional(AgentContainerImageId),
+  createdAt: Schema.optional(Schema.String),
+});
 const StoredConfigurationJson = Schema.fromJsonString(StoredConfiguration);
+const AnyStoredConfigurationJson = Schema.fromJsonString(
+  Schema.Union([StoredConfigurationV1, StoredConfiguration]),
+);
 const encodeStoredConfiguration = Schema.encodeSync(StoredConfigurationJson);
-const decodeStoredConfiguration = Schema.decodeUnknownEffect(StoredConfigurationJson);
-const decodeStoredConfigurationSync = Schema.decodeUnknownSync(StoredConfigurationJson);
+const decodeStoredConfiguration = Schema.decodeUnknownEffect(AnyStoredConfigurationJson);
+const decodeStoredConfigurationSync = Schema.decodeUnknownSync(AnyStoredConfigurationJson);
 const decodeInspectContainers = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(InspectContainer)),
 );
@@ -81,6 +95,51 @@ function status(value: string): AgentContainerSummary["status"] {
   return "error";
 }
 
+function legacyNetworkMode(networkPolicy: string): AgentContainerNetworkMode {
+  const normalized = networkPolicy.trim();
+  if (!normalized) return "offline";
+  if (normalized === AGENT_CONTAINER_INTERNET_POLICY) return "internet";
+  return "custom";
+}
+
+function normalizeStoredConfiguration(
+  stored: typeof StoredConfigurationV1.Type | typeof StoredConfiguration.Type,
+): typeof StoredConfiguration.Type {
+  return stored.version === 1
+    ? {
+        ...stored,
+        version: CONFIG_VERSION,
+        networkMode: legacyNetworkMode(stored.networkPolicy),
+      }
+    : stored;
+}
+
+function networkPolicyForMode(mode: AgentContainerNetworkMode, policy: string): string {
+  if (mode === "offline" || mode === "host") return "";
+  if (mode === "internet") return AGENT_CONTAINER_INTERNET_POLICY;
+  return policy;
+}
+
+function usesIsolatedNetworking(mode: AgentContainerNetworkMode): boolean {
+  return mode === "internet" || mode === "custom";
+}
+
+function podmanNetworkMode(mode: AgentContainerNetworkMode): string {
+  if (mode === "offline") return "none";
+  if (mode === "host") return "host";
+  return "pasta:--no-map-gw";
+}
+
+function existingNetworkModeSupports(
+  actualMode: string,
+  requestedMode: AgentContainerNetworkMode,
+): boolean {
+  if (actualMode === "none") return requestedMode === "offline";
+  if (actualMode === "host") return requestedMode === "host";
+  if (actualMode === "pasta") return requestedMode !== "host";
+  return false;
+}
+
 function toSummary(
   value: typeof InspectContainer.Type,
   configuration: AgentContainerConfiguration,
@@ -94,6 +153,7 @@ function toSummary(
     workspacePath,
     image: value.Config.Image,
     ...(configuration.imageId ? { imageId: configuration.imageId } : {}),
+    networkMode: configuration.networkMode,
     networkPolicy: configuration.networkPolicy,
     status: status(value.State.Status),
     createdAt: value.Created,
@@ -185,6 +245,7 @@ export function makeAgentContainerManager(
       return {
         id,
         workspacePath: fallbackWorkspacePath,
+        networkMode: "offline",
         networkPolicy: "",
       } satisfies AgentContainerConfiguration;
     }
@@ -193,17 +254,19 @@ export function makeAgentContainerManager(
         error("configure", `Invalid stored configuration for '${id}': ${String(cause)}`),
       ),
     );
-    if (expectedWorkspacePath && stored.workspacePath !== expectedWorkspacePath) {
+    const configuration = normalizeStoredConfiguration(stored);
+    if (expectedWorkspacePath && configuration.workspacePath !== expectedWorkspacePath) {
       return yield* error(
         "configure",
-        `Container '${id}' belongs to '${stored.workspacePath}', not '${expectedWorkspacePath}'.`,
+        `Container '${id}' belongs to '${configuration.workspacePath}', not '${expectedWorkspacePath}'.`,
       );
     }
     return {
-      id: stored.id,
-      workspacePath: stored.workspacePath,
-      networkPolicy: stored.networkPolicy,
-      ...(stored.imageId ? { imageId: stored.imageId } : {}),
+      id: configuration.id,
+      workspacePath: configuration.workspacePath,
+      networkMode: configuration.networkMode,
+      networkPolicy: configuration.networkPolicy,
+      ...(configuration.imageId ? { imageId: configuration.imageId } : {}),
     } satisfies AgentContainerConfiguration;
   });
 
@@ -247,7 +310,9 @@ export function makeAgentContainerManager(
                   NodeFSP.readFile(path, "utf8"),
                   NodeFSP.stat(path),
                 ]);
-                const stored = decodeStoredConfigurationSync(contents);
+                const stored = normalizeStoredConfiguration(
+                  decodeStoredConfigurationSync(contents),
+                );
                 return {
                   ...stored,
                   createdAt: stored.createdAt ?? metadata.mtime.toISOString(),
@@ -298,6 +363,7 @@ export function makeAgentContainerManager(
         workspacePath: configuration.workspacePath,
         imageId: configuration.imageId,
         image: image.imageReference,
+        networkMode: configuration.networkMode,
         networkPolicy: configuration.networkPolicy,
         status: "created",
         createdAt: configuration.createdAt,
@@ -319,6 +385,8 @@ export function makeAgentContainerManager(
       return {
         available: false,
         unavailableReason: reason || "Podman is unavailable",
+        isolatedNetworkingAvailable: false,
+        isolatedNetworkingUnavailableReason: reason || "Podman is unavailable",
         containers: storedConfigurations.flatMap((configuration) => {
           const summary = configuredSummary(configuration);
           return summary ? [summary] : [];
@@ -349,8 +417,9 @@ export function makeAgentContainerManager(
         }),
     ];
     return {
-      available: networking.available,
-      ...(networking.reason ? { unavailableReason: networking.reason } : {}),
+      available: true,
+      isolatedNetworkingAvailable: networking.available,
+      ...(networking.reason ? { isolatedNetworkingUnavailableReason: networking.reason } : {}),
       containers,
       imagesDirectory,
       images: publicImages,
@@ -556,8 +625,9 @@ export function makeAgentContainerManager(
     yield* resolveProfile(workspacePath, "configure");
     const currentConfiguration = yield* readConfiguration(input.id, workspacePath, workspacePath);
     const imageId = input.imageId;
+    const requestedPolicy = networkPolicyForMode(input.networkMode, input.networkPolicy);
     const policy = yield* Effect.try({
-      try: () => parseNetworkPolicy(input.networkPolicy),
+      try: () => parseNetworkPolicy(requestedPolicy),
       catch: (cause) => error("configure", cause instanceof Error ? cause.message : String(cause)),
     });
     const existing = (yield* inspectManaged()).find(
@@ -583,18 +653,21 @@ export function makeAgentContainerManager(
           "A created container's image cannot be changed. Create a new container instead.",
         );
       }
-      if (policy.rules.length > 0 && existing.HostConfig.NetworkMode === "none") {
+      if (!existingNetworkModeSupports(existing.HostConfig.NetworkMode, input.networkMode)) {
         return yield* error(
           "configure",
-          "This container predates configurable networking. Create a new container to enable outbound access.",
+          `This container uses Podman network mode '${existing.HostConfig.NetworkMode}'. Create a new container to use '${input.networkMode}' networking.`,
         );
       }
-      if (existing.State.Status === "running") yield* installNetworkPolicy(existing, policy.text);
+      if (existing.State.Status === "running" && existing.HostConfig.NetworkMode === "pasta") {
+        yield* installNetworkPolicy(existing, policy.text);
+      }
     }
     const stored = {
       version: CONFIG_VERSION,
       id: input.id,
       workspacePath,
+      networkMode: input.networkMode,
       networkPolicy: policy.text,
       imageId,
       createdAt: new Date().toISOString(),
@@ -603,6 +676,7 @@ export function makeAgentContainerManager(
     return {
       id: stored.id,
       workspacePath: stored.workspacePath,
+      networkMode: stored.networkMode,
       networkPolicy: stored.networkPolicy,
       imageId: stored.imageId,
     } satisfies AgentContainerConfiguration;
@@ -678,9 +752,14 @@ export function makeAgentContainerManager(
           runningContainer = existing;
         }
       } else {
-        const networking = yield* networkAvailability("create");
-        if (!networking.available) {
-          return yield* error("create", networking.reason ?? "Podman networking is unavailable.");
+        if (usesIsolatedNetworking(configuration.networkMode)) {
+          const networking = yield* networkAvailability("create");
+          if (!networking.available) {
+            return yield* error(
+              "create",
+              networking.reason ?? "Podman isolated networking is unavailable.",
+            );
+          }
         }
         const selectedImage = (yield* listImages("create")).find(
           (image) => image.id === configuration.imageId,
@@ -706,7 +785,7 @@ export function makeAgentContainerManager(
           "--label",
           `${PROFILE_LABEL}=${profile.fingerprint}`,
           "--network",
-          "pasta:--no-map-gw",
+          podmanNetworkMode(configuration.networkMode),
           "--volume",
           `${projectPath}:/workspace:rw`,
           "--volume",
@@ -738,7 +817,9 @@ export function makeAgentContainerManager(
         if (!refreshed) return yield* error("start", `Container '${input.id}' disappeared.`);
         runningContainer = refreshed;
       }
-      yield* installNetworkPolicy(runningContainer, configuration.networkPolicy);
+      if (runningContainer.HostConfig.NetworkMode === "pasta") {
+        yield* installNetworkPolicy(runningContainer, configuration.networkPolicy);
+      }
       const probe = yield* Effect.tryPromise({
         try: () => podman.run(["exec", "--workdir", containerCwd, name, "python3", "--version"]),
         catch: (cause) => error("exec", cause instanceof Error ? cause.message : String(cause)),

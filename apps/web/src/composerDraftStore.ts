@@ -1,8 +1,10 @@
 import {
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
+  AGENT_CONTAINER_INTERNET_POLICY,
   AgentContainerId,
   AgentContainerImageId,
+  AgentContainerNetworkMode,
   defaultInstanceIdForDriver,
   EnvironmentId,
   ModelSelection,
@@ -208,6 +210,7 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
   pendingContainerId: Schema.optionalKey(AgentContainerId),
   containerImageId: Schema.optionalKey(AgentContainerImageId),
+  containerNetworkMode: Schema.optionalKey(AgentContainerNetworkMode),
   containerNetworkPolicy: Schema.optionalKey(Schema.String),
   newContainerByDefault: Schema.optionalKey(Schema.Boolean),
 });
@@ -350,6 +353,8 @@ export interface ComposerThreadDraftState {
   pendingContainerId: AgentContainerId | null;
   /** Image used when the pending container is materialized. */
   containerImageId: AgentContainerImageId | null;
+  /** Network mode used when the pending container is materialized. */
+  containerNetworkMode: AgentContainerNetworkMode;
   /** Network policy used when the pending container is materialized. */
   containerNetworkPolicy: string;
   /** Carries the New container choice into subsequently-created drafts. */
@@ -518,6 +523,7 @@ interface ComposerDraftStoreState {
         ComposerThreadDraftState,
         | "pendingContainerId"
         | "containerImageId"
+        | "containerNetworkMode"
         | "containerNetworkPolicy"
         | "newContainerByDefault"
       >
@@ -748,6 +754,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   interactionMode: null,
   pendingContainerId: null,
   containerImageId: null,
+  containerNetworkMode: "offline",
   containerNetworkPolicy: "",
   newContainerByDefault: false,
 });
@@ -775,6 +782,7 @@ export function createEmptyThreadDraft(): ComposerThreadDraftState {
     interactionMode: null,
     pendingContainerId: null,
     containerImageId: null,
+    containerNetworkMode: "offline",
     containerNetworkPolicy: "",
     newContainerByDefault: false,
   };
@@ -853,9 +861,16 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.interactionMode === null &&
     draft.pendingContainerId === null &&
     draft.containerImageId === null &&
+    draft.containerNetworkMode === "offline" &&
     draft.containerNetworkPolicy === "" &&
     !draft.newContainerByDefault
   );
+}
+
+function legacyContainerNetworkMode(networkPolicy: string): AgentContainerNetworkMode {
+  const normalized = networkPolicy.trim();
+  if (!normalized) return "offline";
+  return normalized === AGENT_CONTAINER_INTERNET_POLICY ? "internet" : "custom";
 }
 
 function normalizeProviderDriverKind(value: unknown): ProviderDriverKind | null {
@@ -1864,6 +1879,27 @@ function normalizePersistedDraftsByThreadId(
       draftCandidate.interactionMode === "plan" || draftCandidate.interactionMode === "default"
         ? draftCandidate.interactionMode
         : null;
+    const pendingContainerId =
+      typeof draftCandidate.pendingContainerId === "string" &&
+      draftCandidate.pendingContainerId.trim()
+        ? AgentContainerId.make(draftCandidate.pendingContainerId)
+        : null;
+    const containerImageId =
+      typeof draftCandidate.containerImageId === "string" && draftCandidate.containerImageId.trim()
+        ? AgentContainerImageId.make(draftCandidate.containerImageId)
+        : null;
+    const containerNetworkPolicy =
+      typeof draftCandidate.containerNetworkPolicy === "string"
+        ? draftCandidate.containerNetworkPolicy
+        : "";
+    const containerNetworkMode =
+      draftCandidate.containerNetworkMode === "offline" ||
+      draftCandidate.containerNetworkMode === "host" ||
+      draftCandidate.containerNetworkMode === "internet" ||
+      draftCandidate.containerNetworkMode === "custom"
+        ? draftCandidate.containerNetworkMode
+        : legacyContainerNetworkMode(containerNetworkPolicy);
+    const newContainerByDefault = draftCandidate.newContainerByDefault === true;
     const prompt = ensureInlineTerminalContextPlaceholders(
       promptCandidate,
       terminalContexts.length,
@@ -1927,7 +1963,12 @@ function normalizePersistedDraftsByThreadId(
       reviewComments.length === 0 &&
       !hasModelData &&
       !runtimeMode &&
-      !interactionMode
+      !interactionMode &&
+      pendingContainerId === null &&
+      containerImageId === null &&
+      containerNetworkMode === "offline" &&
+      containerNetworkPolicy === "" &&
+      !newContainerByDefault
     ) {
       continue;
     }
@@ -1959,6 +2000,11 @@ function normalizePersistedDraftsByThreadId(
         : {}),
       ...(runtimeMode ? { runtimeMode } : {}),
       ...(interactionMode ? { interactionMode } : {}),
+      ...(pendingContainerId ? { pendingContainerId } : {}),
+      ...(containerImageId ? { containerImageId } : {}),
+      ...(containerNetworkMode !== "offline" ? { containerNetworkMode } : {}),
+      ...(containerNetworkPolicy ? { containerNetworkPolicy } : {}),
+      ...(newContainerByDefault ? { newContainerByDefault: true } : {}),
     };
   }
 
@@ -2063,6 +2109,7 @@ function partializeComposerDraftStoreState(
       draft.interactionMode === null &&
       draft.pendingContainerId === null &&
       draft.containerImageId === null &&
+      draft.containerNetworkMode === "offline" &&
       draft.containerNetworkPolicy === "" &&
       !draft.newContainerByDefault
     ) {
@@ -2145,6 +2192,9 @@ function partializeComposerDraftStoreState(
       ...(draft.interactionMode ? { interactionMode: draft.interactionMode } : {}),
       ...(draft.pendingContainerId ? { pendingContainerId: draft.pendingContainerId } : {}),
       ...(draft.containerImageId ? { containerImageId: draft.containerImageId } : {}),
+      ...(draft.containerNetworkMode !== "offline"
+        ? { containerNetworkMode: draft.containerNetworkMode }
+        : {}),
       ...(draft.containerNetworkPolicy
         ? { containerNetworkPolicy: draft.containerNetworkPolicy }
         : {}),
@@ -2413,6 +2463,9 @@ function toHydratedThreadDraft(
     interactionMode: persistedDraft.interactionMode ?? null,
     pendingContainerId: persistedDraft.pendingContainerId ?? null,
     containerImageId: persistedDraft.containerImageId ?? null,
+    containerNetworkMode:
+      persistedDraft.containerNetworkMode ??
+      legacyContainerNetworkMode(persistedDraft.containerNetworkPolicy ?? ""),
     containerNetworkPolicy: persistedDraft.containerNetworkPolicy ?? "",
     newContainerByDefault: persistedDraft.newContainerByDefault ?? false,
   };
@@ -2632,6 +2685,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             if (
               existing.pendingContainerId === nextDraft.pendingContainerId &&
               existing.containerImageId === nextDraft.containerImageId &&
+              existing.containerNetworkMode === nextDraft.containerNetworkMode &&
               existing.containerNetworkPolicy === nextDraft.containerNetworkPolicy &&
               existing.newContainerByDefault === nextDraft.newContainerByDefault
             ) {

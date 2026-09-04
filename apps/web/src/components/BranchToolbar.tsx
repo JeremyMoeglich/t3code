@@ -1,5 +1,10 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { AgentContainerImageId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type {
+  AgentContainerImageId,
+  AgentContainerNetworkMode,
+  EnvironmentId,
+  ThreadId,
+} from "@t3tools/contracts";
 import {
   ChevronDownIcon,
   CloudIcon,
@@ -66,8 +71,12 @@ interface BranchToolbarProps {
   containerImageId: AgentContainerImageId | null;
   executionTargetLocked: boolean;
   onExecutionTargetChange: (target: ComposerExecutionTarget) => void;
+  newContainerNetworkMode: AgentContainerNetworkMode;
   newContainerNetworkPolicy: string;
-  onNewContainerNetworkPolicyChange: (networkPolicy: string) => void;
+  onNewContainerNetworkChange: (
+    networkMode: AgentContainerNetworkMode,
+    networkPolicy: string,
+  ) => void;
   onContainerImageChange: (imageId: AgentContainerImageId | null) => void;
 }
 
@@ -407,8 +416,9 @@ export const BranchToolbar = memo(function BranchToolbar({
   containerImageId,
   executionTargetLocked,
   onExecutionTargetChange,
+  newContainerNetworkMode,
   newContainerNetworkPolicy,
-  onNewContainerNetworkPolicyChange,
+  onNewContainerNetworkChange,
   onContainerImageChange,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
@@ -554,8 +564,9 @@ export const BranchToolbar = memo(function BranchToolbar({
             value={executionTarget}
             locked={executionTargetLocked}
             onChange={onExecutionTargetChange}
+            newContainerNetworkMode={newContainerNetworkMode}
             newContainerNetworkPolicy={newContainerNetworkPolicy}
-            onNewContainerNetworkPolicyChange={onNewContainerNetworkPolicyChange}
+            onNewContainerNetworkChange={onNewContainerNetworkChange}
           />
         </>
       ) : null}

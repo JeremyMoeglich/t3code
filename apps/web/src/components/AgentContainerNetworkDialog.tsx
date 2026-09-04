@@ -1,3 +1,7 @@
+import {
+  AGENT_CONTAINER_INTERNET_POLICY,
+  type AgentContainerNetworkMode,
+} from "@t3tools/contracts";
 import { BoxIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -14,43 +18,46 @@ import {
 import { Radio, RadioGroup } from "./ui/radio-group";
 import { Textarea } from "./ui/textarea";
 
-export const UNRESTRICTED_NETWORK_POLICY = "allow 0.0.0.0/0\nallow ::/0";
-
-type NetworkPreset = "offline" | "internet" | "custom";
-
-function presetFor(policy: string): NetworkPreset {
-  if (!policy.trim()) return "offline";
-  if (policy.trim() === UNRESTRICTED_NETWORK_POLICY) return "internet";
-  return "custom";
+export interface AgentContainerNetworkSelection {
+  networkMode: AgentContainerNetworkMode;
+  networkPolicy: string;
 }
 
 interface AgentContainerNetworkDialogProps {
   open: boolean;
+  initialMode: AgentContainerNetworkMode;
   initialPolicy: string;
+  isolatedNetworkingAvailable: boolean;
+  isolatedNetworkingUnavailableReason?: string;
   onOpenChange: (open: boolean) => void;
-  onSave: (networkPolicy: string) => Promise<string | null>;
+  onSave: (selection: AgentContainerNetworkSelection) => Promise<string | null>;
 }
 
 export function AgentContainerNetworkDialog({
   open,
+  initialMode,
   initialPolicy,
+  isolatedNetworkingAvailable,
+  isolatedNetworkingUnavailableReason,
   onOpenChange,
   onSave,
 }: AgentContainerNetworkDialogProps) {
-  const [preset, setPreset] = useState<NetworkPreset>(() => presetFor(initialPolicy));
+  const [mode, setMode] = useState<AgentContainerNetworkMode>(initialMode);
   const [customPolicy, setCustomPolicy] = useState(initialPolicy);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    setPreset(presetFor(initialPolicy));
+    setMode(initialMode);
     setCustomPolicy(initialPolicy);
     setError(null);
-  }, [initialPolicy, open]);
+  }, [initialMode, initialPolicy, open]);
 
   const policy =
-    preset === "offline" ? "" : preset === "internet" ? UNRESTRICTED_NETWORK_POLICY : customPolicy;
+    mode === "internet" ? AGENT_CONTAINER_INTERNET_POLICY : mode === "custom" ? customPolicy : "";
+  const selectedModeUnavailable =
+    !isolatedNetworkingAvailable && (mode === "internet" || mode === "custom");
 
   return (
     <Dialog open={open} onOpenChange={(next) => !saving && onOpenChange(next)}>
@@ -58,15 +65,18 @@ export function AgentContainerNetworkDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <BoxIcon className="size-4" />
-            Container network policy
+            Container networking
           </DialogTitle>
           <DialogDescription>
-            Outbound access is owned by this container. Threads that select it inherit the same
-            policy.
+            Choose whether the container is offline, shares the host network, or gets an isolated
+            network namespace. Threads that select it inherit the same mode.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-4">
-          <RadioGroup value={preset} onValueChange={(value) => setPreset(value as NetworkPreset)}>
+          <RadioGroup
+            value={mode}
+            onValueChange={(value) => setMode(value as AgentContainerNetworkMode)}
+          >
             <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3">
               <Radio value="offline" />
               <span>
@@ -77,7 +87,17 @@ export function AgentContainerNetworkDialog({
               </span>
             </label>
             <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3">
-              <Radio value="internet" />
+              <Radio value="host" />
+              <span>
+                <span className="block text-sm font-medium">Host</span>
+                <span className="block text-xs text-muted-foreground">
+                  Broad network access through the host namespace. Host loopback and listening ports
+                  are shared.
+                </span>
+              </span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-data-disabled:cursor-not-allowed has-data-disabled:opacity-60">
+              <Radio value="internet" disabled={!isolatedNetworkingAvailable} />
               <span>
                 <span className="block text-sm font-medium">Internet</span>
                 <span className="block text-xs text-muted-foreground">
@@ -86,8 +106,8 @@ export function AgentContainerNetworkDialog({
                 </span>
               </span>
             </label>
-            <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3">
-              <Radio value="custom" />
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-data-disabled:cursor-not-allowed has-data-disabled:opacity-60">
+              <Radio value="custom" disabled={!isolatedNetworkingAvailable} />
               <span>
                 <span className="block text-sm font-medium">Custom IP policy</span>
                 <span className="block text-xs text-muted-foreground">
@@ -97,7 +117,14 @@ export function AgentContainerNetworkDialog({
             </label>
           </RadioGroup>
 
-          {preset === "custom" ? (
+          {!isolatedNetworkingAvailable && isolatedNetworkingUnavailableReason ? (
+            <p className="text-xs text-muted-foreground">
+              Internet and Custom require isolated Podman networking:{" "}
+              {isolatedNetworkingUnavailableReason}
+            </p>
+          ) : null}
+
+          {mode === "custom" ? (
             <div className="space-y-2">
               <Textarea
                 aria-label="Container network policy"
@@ -122,18 +149,18 @@ export function AgentContainerNetworkDialog({
             Cancel
           </Button>
           <Button
-            disabled={saving}
+            disabled={saving || selectedModeUnavailable}
             onClick={() => {
               setSaving(true);
               setError(null);
-              void onSave(policy).then((message) => {
+              void onSave({ networkMode: mode, networkPolicy: policy }).then((message) => {
                 setSaving(false);
                 if (message) setError(message);
                 else onOpenChange(false);
               });
             }}
           >
-            {saving ? "Saving…" : "Save policy"}
+            {saving ? "Saving…" : "Save networking"}
           </Button>
         </DialogFooter>
       </DialogPopup>

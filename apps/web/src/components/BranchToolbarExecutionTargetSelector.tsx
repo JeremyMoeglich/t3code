@@ -1,6 +1,7 @@
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   AgentContainerSummary,
+  AgentContainerNetworkMode,
   EnvironmentId,
   ThreadExecutionTarget,
 } from "@t3tools/contracts";
@@ -28,8 +29,12 @@ interface BranchToolbarExecutionTargetSelectorProps {
   value: ComposerExecutionTarget;
   locked: boolean;
   onChange: (value: ComposerExecutionTarget) => void;
+  newContainerNetworkMode: AgentContainerNetworkMode;
   newContainerNetworkPolicy: string;
-  onNewContainerNetworkPolicyChange: (networkPolicy: string) => void;
+  onNewContainerNetworkChange: (
+    networkMode: AgentContainerNetworkMode,
+    networkPolicy: string,
+  ) => void;
 }
 
 export type ComposerExecutionTarget = ThreadExecutionTarget | { readonly kind: "new-container" };
@@ -49,8 +54,9 @@ export const BranchToolbarExecutionTargetSelector = memo(
     value,
     locked,
     onChange,
+    newContainerNetworkMode,
     newContainerNetworkPolicy,
-    onNewContainerNetworkPolicyChange,
+    onNewContainerNetworkChange,
   }: BranchToolbarExecutionTargetSelectorProps) {
     const [networkDialog, setNetworkDialog] = useState<NetworkDialog | null>(null);
     const configure = useAtomCommand(agentContainerEnvironment.configure, {
@@ -88,11 +94,12 @@ export const BranchToolbarExecutionTargetSelector = memo(
           }
         : null;
     const podmanAvailable = query.data?.available !== false;
+    const isolatedNetworkingAvailable = query.data?.isolatedNetworkingAvailable !== false;
     const items = [
       { value: HOST_VALUE, label: "Host" },
       { value: NEW_VALUE, label: "New container" },
       ...(selectedContainer || value.kind === "new-container"
-        ? [{ value: NETWORK_VALUE, label: "Network policy" }]
+        ? [{ value: NETWORK_VALUE, label: "Networking" }]
         : []),
       ...compatible.map((container) => ({
         value: containerValue(container.id),
@@ -171,7 +178,7 @@ export const BranchToolbarExecutionTargetSelector = memo(
                   disabled={locked && value.kind === "new-container"}
                 >
                   <span className="inline-flex items-center gap-1.5">
-                    <ShieldIcon className="size-3" /> Network policy…
+                    <ShieldIcon className="size-3" /> Networking…
                   </span>
                 </SelectItem>
               ) : null}
@@ -205,16 +212,27 @@ export const BranchToolbarExecutionTargetSelector = memo(
         </Select>
         <AgentContainerNetworkDialog
           open={networkDialog !== null}
+          initialMode={
+            networkDialog?.kind === "existing"
+              ? networkDialog.container.networkMode
+              : newContainerNetworkMode
+          }
           initialPolicy={
             networkDialog?.kind === "existing"
               ? networkDialog.container.networkPolicy
               : newContainerNetworkPolicy
           }
+          isolatedNetworkingAvailable={isolatedNetworkingAvailable}
+          {...(query.data?.isolatedNetworkingUnavailableReason
+            ? {
+                isolatedNetworkingUnavailableReason: query.data.isolatedNetworkingUnavailableReason,
+              }
+            : {})}
           onOpenChange={(open) => !open && setNetworkDialog(null)}
-          onSave={async (networkPolicy) => {
+          onSave={async ({ networkMode, networkPolicy }) => {
             if (!networkDialog) return null;
             if (networkDialog.kind === "new-container") {
-              onNewContainerNetworkPolicyChange(networkPolicy);
+              onNewContainerNetworkChange(networkMode, networkPolicy);
               return null;
             }
             if (!workspacePath) return "A workspace is required.";
@@ -226,6 +244,7 @@ export const BranchToolbarExecutionTargetSelector = memo(
               input: {
                 id: networkDialog.container.id,
                 workspacePath,
+                networkMode,
                 networkPolicy,
                 imageId: networkDialog.container.imageId,
               },
