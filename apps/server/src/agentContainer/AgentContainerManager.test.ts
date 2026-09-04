@@ -21,7 +21,7 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
     );
     const resolvConfPath = NodePath.join(workspacePath, "resolv.conf");
     const baseDir = NodePath.join(workspacePath, "t3-home");
-    const imageContext = NodePath.join(baseDir, "container-images", "typescript");
+    const imageContext = NodePath.join(baseDir, "container-images", "containerfiles", "typescript");
     yield* Effect.promise(() => NodeFSP.mkdir(imageContext, { recursive: true }));
     yield* Effect.promise(() =>
       NodeFSP.writeFile(NodePath.join(imageContext, "Containerfile"), "FROM node:24\n"),
@@ -33,18 +33,21 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
     }> = [];
     let created = false;
     let running = false;
+    let imageCached = false;
+    let currentContainerId = "container-1";
+    let currentContainerName = "t3-agent-container-1";
     let profileLabel: string | undefined;
     const inspect = () =>
       JSON.stringify([
         {
           Id: "podman-id",
-          Name: "t3-agent-container-1",
+          Name: currentContainerName,
           Created: "2026-09-02T00:00:00.000Z",
           Config: {
             Image: "localhost/t3code-agent-base:3",
             Labels: {
               "dev.t3code.agent-container": "true",
-              "dev.t3code.agent-container.id": "container-1",
+              "dev.t3code.agent-container.id": currentContainerId,
               "dev.t3code.agent-container.workspace": workspacePath,
               ...(profileLabel ? { "dev.t3code.agent-container.profile": profileLabel } : {}),
             },
@@ -62,33 +65,50 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
       spawn: () => {
         throw new Error("Tool execution is outside this lifecycle test.");
       },
-      run: (args, options) => {
+      run: async (args, options) => {
         calls.push({
           args,
           ...(options?.input === undefined ? {} : { input: options.input }),
         });
         if (args[0] === "ps") {
-          return Promise.resolve({
+          return {
             stdout: created ? "podman-id\n" : "",
             stderr: "",
             exitCode: 0,
-          });
+          };
         }
         if (args[0] === "inspect") {
-          return Promise.resolve({
+          return {
             stdout: inspect(),
             stderr: "",
             exitCode: 0,
-          });
+          };
         }
+        if (args[0] === "image" && args[1] === "exists") {
+          return { stdout: "", stderr: "", exitCode: imageCached ? 0 : 1 };
+        }
+        if (args[0] === "pull") {
+          return { stdout: "sha256:imported\n", stderr: "", exitCode: 0 };
+        }
+        if (args[0] === "save") {
+          const output = args[args.indexOf("--output") + 1];
+          assert.isDefined(output);
+          await NodeFSP.writeFile(output, "oci archive");
+        }
+        if (args[0] === "tag") imageCached = true;
         if (args[0] === "create") {
           created = true;
+          currentContainerName = args[args.indexOf("--name") + 1] ?? currentContainerName;
+          currentContainerId =
+            args
+              .find((value) => value.startsWith("dev.t3code.agent-container.id="))
+              ?.slice("dev.t3code.agent-container.id=".length) ?? currentContainerId;
           profileLabel = args
             .find((value) => value.startsWith("dev.t3code.agent-container.profile="))
             ?.slice("dev.t3code.agent-container.profile=".length);
         }
         if (args[0] === "start") running = true;
-        return Promise.resolve({ stdout: "", stderr: "", exitCode: 0 });
+        return { stdout: "", stderr: "", exitCode: 0 };
       },
     };
     const manager = makeAgentContainerManager(
@@ -114,11 +134,22 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
 
     const create = calls.find(({ args }) => args[0] === "create")?.args;
     const build = calls.find(({ args }) => args[0] === "build")?.args;
+    const save = calls.find(({ args }) => args[0] === "save")?.args;
+    const tag = calls.find(({ args }) => args[0] === "tag")?.args;
     assert.isDefined(create);
     assert.isDefined(build);
+    assert.isDefined(save);
+    assert.isDefined(tag);
     assert.include(build, NodePath.join(imageContext, "Containerfile"));
     assert.equal(build.at(-1), imageContext);
-    assert.equal(create.at(-1), build[build.indexOf("--tag") + 1]);
+    assert.equal(save.at(-1), build[build.indexOf("--tag") + 1]);
+    assert.equal(save[save.indexOf("--format") + 1], "oci-archive");
+    assert.equal(tag[1], build[build.indexOf("--tag") + 1]);
+    assert.equal(create.at(-1), tag[2]);
+    const promoted = yield* Effect.promise(() =>
+      NodeFSP.stat(NodePath.join(baseDir, "container-images", "oci", "typescript.tar")),
+    );
+    assert.isTrue(promoted.isFile());
     assert.include(create, "pasta:--no-map-gw");
     assert.include(create, `${workspacePath}:/workspace:rw`);
     assert.include(
@@ -164,6 +195,35 @@ it.effect("creates a T3-owned container and installs its outbound policy", () =>
       workspacePath: worktreePath,
     });
     assert.equal(worktreeEnvironment.cwd, "/t3/worktrees/t3code-feature");
+
+    calls.length = 0;
+    created = false;
+    running = false;
+    imageCached = false;
+    const importedId = AgentContainerId.make("container-2");
+    yield* manager.configure({
+      id: importedId,
+      workspacePath,
+      networkPolicy: "",
+      imageId: AgentContainerImageId.make("folder:typescript"),
+    });
+    yield* manager.executionEnvironment({ id: importedId, workspacePath });
+
+    const exists = calls.find(({ args }) => args[0] === "image" && args[1] === "exists")?.args;
+    const pull = calls.find(({ args }) => args[0] === "pull")?.args;
+    const importedTag = calls.find(
+      ({ args }) => args[0] === "tag" && args[1] === "sha256:imported",
+    )?.args;
+    const importedCreate = calls.find(({ args }) => args[0] === "create")?.args;
+    assert.isDefined(exists);
+    assert.isDefined(pull);
+    assert.equal(
+      pull[2],
+      `oci-archive:${NodePath.join(baseDir, "container-images", "oci", "typescript.tar")}`,
+    );
+    assert.isDefined(importedTag);
+    assert.equal(importedCreate?.at(-1), importedTag[2]);
+    assert.isFalse(calls.some(({ args }) => args[0] === "build"));
   }),
 );
 
@@ -176,12 +236,15 @@ it.effect("configures containers and lists image folders while networking is una
       Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true })),
     );
     const workspacePath = NodePath.join(root, "workspace");
-    const imageContext = NodePath.join(root, "container-images", "web");
+    const imageContext = NodePath.join(root, "container-images", "containerfiles", "web");
+    const ociDirectory = NodePath.join(root, "container-images", "oci");
     yield* Effect.promise(() => NodeFSP.mkdir(workspacePath, { recursive: true }));
     yield* Effect.promise(() => NodeFSP.mkdir(imageContext, { recursive: true }));
+    yield* Effect.promise(() => NodeFSP.mkdir(ociDirectory, { recursive: true }));
     yield* Effect.promise(() =>
       NodeFSP.writeFile(NodePath.join(imageContext, "Containerfile"), "FROM node:24\n"),
     );
+    yield* Effect.promise(() => NodeFSP.writeFile(NodePath.join(ociDirectory, "web.tar"), "oci"));
     const podman: PodmanBackend = {
       networkAvailability: () =>
         Promise.resolve({
@@ -231,6 +294,7 @@ it.effect("configures containers and lists image folders while networking is una
       listed.images.map((image) => image.id),
       ["folder:web"],
     );
+    assert.equal(listed.images[0]?.source, "oci");
     assert.equal(listed.containers[0]?.id, id);
     assert.equal(listed.containers[0]?.imageId, "folder:web");
     assert.equal(listed.containers[0]?.status, "created");

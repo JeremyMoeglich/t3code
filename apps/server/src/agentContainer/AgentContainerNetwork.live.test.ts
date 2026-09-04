@@ -38,7 +38,7 @@ it.effect.runIf(process.env.T3_LIVE_PODMAN_NETWORK === "1")(
       );
       const workspacePath = NodePath.join(root, "workspace");
       yield* Effect.promise(() => NodeFSP.mkdir(workspacePath));
-      const imagePath = NodePath.join(root, "container-images", "live-test");
+      const imagePath = NodePath.join(root, "container-images", "containerfiles", "live-test");
       yield* Effect.promise(() => NodeFSP.mkdir(imagePath, { recursive: true }));
       yield* Effect.promise(() =>
         NodeFSP.writeFile(

@@ -47,7 +47,7 @@ export const BranchToolbarContainerImageSelector = memo(
     const selectedImage = images.find((image) => image.id === value);
     const items = [
       ...images.map((image) => ({ value: image.id, label: image.name })),
-      { value: OPEN_FOLDER_VALUE, label: "Open image folder" },
+      { value: OPEN_FOLDER_VALUE, label: "Open image folders" },
     ];
     useEffect(() => {
       if (query.data && value && !selectedImage && !locked) onChange(null);
@@ -109,13 +109,15 @@ export const BranchToolbarContainerImageSelector = memo(
               </SelectItem>
             ))}
             {query.data && images.length === 0 ? (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">No Containerfiles found.</p>
+              <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                No OCI images or Containerfiles found.
+              </p>
             ) : null}
           </SelectGroup>
           <SelectSeparator />
           <SelectItem value={OPEN_FOLDER_VALUE} disabled={!query.data?.imagesDirectory}>
             <span className="inline-flex items-center gap-1.5">
-              <FolderOpenIcon className="size-3" /> Open image folder
+              <FolderOpenIcon className="size-3" /> Open image folders
             </span>
           </SelectItem>
         </SelectPopup>

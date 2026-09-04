@@ -13,7 +13,7 @@ export type AgentContainerImageId = typeof AgentContainerImageId.Type;
 export const AgentContainerImageDefinition = Schema.Struct({
   id: AgentContainerImageId,
   name: TrimmedNonEmptyString,
-  source: Schema.Literal("folder"),
+  source: Schema.Literals(["oci", "containerfile"]),
 });
 export type AgentContainerImageDefinition = typeof AgentContainerImageDefinition.Type;
 

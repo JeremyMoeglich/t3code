@@ -9,6 +9,7 @@ import {
   type AgentContainerListResult,
   type AgentContainerSummary,
 } from "@t3tools/contracts";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as Context from "effect/Context";
@@ -22,7 +23,11 @@ import {
   type AgentContainerProfile,
   resolveAgentContainerProfile,
 } from "./AgentContainerProfile.ts";
-import { type AgentContainerImage, listAgentContainerImages } from "./AgentContainerImages.ts";
+import {
+  type AgentContainerImage,
+  listAgentContainerImages,
+  ociImageReference,
+} from "./AgentContainerImages.ts";
 import { PodmanExecutionEnv } from "./PodmanExecutionEnv.ts";
 import { localPodmanBackend, type PodmanBackend } from "./PodmanBackend.ts";
 import { expandDnsRules, parseNetworkPolicy, renderNftables } from "./NetworkPolicy.ts";
@@ -355,12 +360,44 @@ export function makeAgentContainerManager(
   const prepareImage = Effect.fn("AgentContainerManager.prepareImage")(function* (
     image: AgentContainerImage,
   ) {
-    if (!image.imageReference || !image.containerfilePath || !image.contextPath) {
-      return yield* error("create", `Container image definition '${image.id}' is incomplete.`);
+    if (image.source === "oci") {
+      if (!image.ociArchivePath) {
+        return yield* error("create", `OCI image definition '${image.id}' is incomplete.`);
+      }
+      const exists = yield* Effect.tryPromise({
+        try: () => podman.run(["image", "exists", image.imageReference]),
+        catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
+      });
+      if (exists.exitCode === 0) return image.imageReference;
+      if (exists.exitCode !== 1) return yield* error("create", exists.stderr);
+
+      const imported = yield* Effect.tryPromise({
+        try: () => podman.run(["pull", "--quiet", `oci-archive:${image.ociArchivePath}`]),
+        catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
+      });
+      if (imported.exitCode !== 0) return yield* error("create", imported.stderr);
+      const importedReference = imported.stdout.trim().split(/\r?\n/).at(-1)?.trim();
+      if (!importedReference) {
+        return yield* error(
+          "create",
+          `Podman did not identify imported OCI image '${image.name}'.`,
+        );
+      }
+      const tagged = yield* Effect.tryPromise({
+        try: () => podman.run(["tag", importedReference, image.imageReference]),
+        catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
+      });
+      if (tagged.exitCode !== 0) return yield* error("create", tagged.stderr);
+      return image.imageReference;
+    }
+
+    if (!image.containerfilePath || !image.contextPath || !image.promotionPath) {
+      return yield* error("create", `Containerfile image definition '${image.id}' is incomplete.`);
     }
     const imageReference = image.imageReference;
     const containerfilePath = image.containerfilePath;
     const contextPath = image.contextPath;
+    const promotionPath = image.promotionPath;
     const built = yield* Effect.tryPromise({
       try: () =>
         podman.run([
@@ -376,7 +413,43 @@ export function makeAgentContainerManager(
       catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
     });
     if (built.exitCode !== 0) return yield* error("create", built.stderr);
-    return imageReference;
+
+    const temporaryArchive = `${promotionPath}.${process.pid}.${NodeCrypto.randomUUID()}.tmp`;
+    const saved = yield* Effect.tryPromise({
+      try: () =>
+        podman.run([
+          "save",
+          "--quiet",
+          "--format",
+          "oci-archive",
+          "--output",
+          temporaryArchive,
+          imageReference,
+        ]),
+      catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
+    });
+    if (saved.exitCode !== 0) {
+      yield* Effect.promise(() => NodeFSP.rm(temporaryArchive, { force: true }));
+      return yield* error("create", saved.stderr);
+    }
+    const promotedReference = yield* Effect.tryPromise({
+      try: async () => {
+        try {
+          await NodeFSP.rename(temporaryArchive, promotionPath);
+          return ociImageReference(promotionPath, await NodeFSP.stat(promotionPath));
+        } catch (cause) {
+          await NodeFSP.rm(temporaryArchive, { force: true });
+          throw cause;
+        }
+      },
+      catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
+    });
+    const tagged = yield* Effect.tryPromise({
+      try: () => podman.run(["tag", imageReference, promotedReference]),
+      catch: (cause) => error("create", cause instanceof Error ? cause.message : String(cause)),
+    });
+    if (tagged.exitCode !== 0) return yield* error("create", tagged.stderr);
+    return promotedReference;
   });
 
   const prepareProfileDirectories = Effect.fn("AgentContainerManager.prepareProfileDirectories")(
@@ -551,7 +624,7 @@ export function makeAgentContainerManager(
       if (!configuration.imageId) {
         return yield* error(
           "create",
-          `Container '${input.id}' has no folder image configured. Select New container and choose an image.`,
+          `Container '${input.id}' has no image configured. Select New container and choose an image.`,
         );
       }
       const projectPath = yield* Effect.tryPromise({
