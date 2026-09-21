@@ -14,7 +14,6 @@ import {
   SelectGroupLabel,
   SelectItem,
   SelectPopup,
-  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
@@ -114,7 +113,7 @@ export const BranchToolbarContainerImageSelector = memo(
               </p>
             ) : null}
           </SelectGroup>
-          <SelectSeparator />
+          <div role="separator" className="my-1 h-px bg-border" />
           <SelectItem value={OPEN_FOLDER_VALUE} disabled={!query.data?.imagesDirectory}>
             <span className="inline-flex items-center gap-1.5">
               <FolderOpenIcon className="size-3" /> Open image folders

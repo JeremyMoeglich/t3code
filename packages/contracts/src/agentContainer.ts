@@ -76,7 +76,7 @@ export const AgentContainerConfiguration = Schema.Struct({
 });
 export type AgentContainerConfiguration = typeof AgentContainerConfiguration.Type;
 
-export class AgentContainerError extends Schema.TaggedErrorClass<AgentContainerError>()(
+export class AgentContainerError extends Schema.TaggedError<AgentContainerError>()(
   "AgentContainerError",
   {
     operation: Schema.Literals(["list", "configure", "create", "start", "network", "exec"]),
